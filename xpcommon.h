@@ -10,6 +10,7 @@
 #include <string>
 #include <cassert>
 #include <cmath>
+#define __STDC_FORMAT_MACROS
 #include <cinttypes>
 
 namespace xp {
@@ -89,7 +90,7 @@ class stopwatch {
     }
     void show() {
         if (!m_silent) {
-            printf("%s took %lld ms.\n", m_sid.c_str(),
+            printf("%s took%" PRIu64 "ms.\n", m_sid.c_str(),
                 to_int(duration(m_end, m_start)));
         }
         m_silent = true;

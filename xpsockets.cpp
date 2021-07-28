@@ -159,7 +159,7 @@ template <typename CRTP> class SocketBase {
         } // I forgive u
         if (this->context()) {
             if (this->context()->debug_info) {
-                printf("called shutdown() on fd: %d , with id %lld becoz %s\n",
+                printf("called shutdown() on fd: %d , with id %" PRIu64 "becoz %s\n",
                     static_cast<int>(m_fd), this->m_id, why);
             }
         }
@@ -426,8 +426,9 @@ ConnectingSocket::~ConnectingSocket() {
 void SocketContext::on_idle(Sock* ptr) noexcept {
     assert(ptr);
     auto pa = dynamic_cast<AcceptedSocket*>(ptr);
-    static timepoint_t last_accept_time = xp::system_current_time_millis();
-    const duration_t accept_interval{1000};
+    //static timepoint_t last_accept_time = xp::system_current_time_millis();
+
+    // const duration_t accept_interval{1000};
     static auto constexpr max_concurrency = 200;
 
     if (pa != nullptr) {
@@ -440,8 +441,8 @@ void SocketContext::on_idle(Sock* ptr) noexcept {
                     xp::sleep(1);
                     return;
                 }
-                auto dur = xp::duration(
-                    xp::system_current_time_millis(), last_accept_time);
+                //auto dur = xp::duration(
+                //    xp::system_current_time_millis(), last_accept_time);
 // on MAC, without this, recv keeps returning -1 and would_block
 // for an insane amount of time (some seconds) when we recurse.
 // I can only guess he's pissed off with hitting ::accept() too
@@ -452,7 +453,7 @@ void SocketContext::on_idle(Sock* ptr) noexcept {
 #endif
 
                 if (server->perform_internal_accept(this, this->debug_info)) {
-                    last_accept_time = xp::system_current_time_millis();
+                    // last_accept_time = xp::system_current_time_millis();
                     if (this->debug_info) {
                         puts("*****************on_idle caused another socket "
                              "to be "
@@ -567,7 +568,7 @@ auto ServerSocket::on_after_accept_new_client(
             sent.return_value, sent.bytes_transferred);
     }
     if (sent.return_value != 0) {
-        printf("send failed for fd: %d, with id %lld\n",
+        printf("send failed for fd: %d, with id %" PRIu64 "\n",
             static_cast<int>(a->pimpl->fd()), a->pimpl->id());
     }
     assert(sent.return_value == 0 && sent.bytes_transferred == hdr.length());
@@ -742,6 +743,8 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
                 "read:\n%s\nhaving read: %zu bytes\n",
                 attempts, (int)sw.elapsed_ms(), a->to_string().c_str(),
                 a->data().length());
+            fprintf(stderr, "Note: current accepts: %lu and max_concurrent clients: %u\n",
+                    this->m_naccepts, this->m_npeak_active_accepts);
             return to_int(errors_t::NOT_CONN);
         }
         if (retval < 0) {
@@ -801,7 +804,7 @@ auto ServerSocket::remove_client(
 
                     printf("removing client, then calling shutdown, with fd:%d "
                            "and id "
-                           "%llu\n",
+                           "%" PRIu64 "\n",
                         static_cast<int>(client_to_remove->pimpl->fd()),
                         client_to_remove->id());
                     printf("reason %s\n", why);
@@ -827,12 +830,12 @@ auto ServerSocket::remove_client(
         if (debug) {
             printf("\n\nCurrent number of connected clients: %d\n",
                 (int)m_clients.size());
-            printf("Peak number of connected clients: %zd, at timestamp %llu\n",
+            printf("Peak number of connected clients: %zd, at timestamp %" PRIu64 "\n",
                 this->peak_num_clients(), to_int(this->peaked_when()));
             const auto ms_ago = xp::duration(
                 xp::system_current_time_millis(), this->peaked_when());
             printf(
-                "This was: %lld seconds ago\n", to_int(ms_ago) / xp::ms_in_sec);
+                "This was: %" PRIu64 " seconds ago\n", to_int(ms_ago) / xp::ms_in_sec);
         }
         delete client_to_remove;
         if (debug) {

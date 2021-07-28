@@ -231,9 +231,7 @@ template <typename CRTP> class SocketBase {
                 assert(ret.return_value != -1);
                 return ret;
             }
-            if (read > 0) {
-                printf("read = %d %s\n", read, tmp.data());
-            }
+
             if (read < 0) {
                 m_last_error = xp::socket_error();
                 assert(m_last_error); // why? it returned -1
@@ -430,26 +428,29 @@ void SocketContext::on_idle(Sock* ptr) noexcept {
     auto pa = dynamic_cast<AcceptedSocket*>(ptr);
     static timepoint_t last_accept_time = xp::system_current_time_millis();
     const duration_t accept_interval{1000};
+    static auto constexpr max_concurrency = 200;
 
     if (pa != nullptr) {
         auto server = pa->server();
 
         if (server != nullptr) {
             if (!server->is_blocking()) {
-                if (server->m_nactive_accepts >= 250) {
+                if (server->m_nactive_accepts >= max_concurrency) {
                     // avoid stack overflow??
                     xp::sleep(1);
                     return;
                 }
                 auto dur = xp::duration(
                     xp::system_current_time_millis(), last_accept_time);
-                // on MAC, without this, recv keeps returning -1 and would_block
-                // for an insane amount of time (some seconds). I can only guess
-                // he's pissed off with hitting ::accept() too much?
-                if (to_int(dur) < to_int(accept_interval)) {
-                    xp::sleep(1);
-                    return;
-                }
+// on MAC, without this, recv keeps returning -1 and would_block
+// for an insane amount of time (some seconds) when we recurse.
+// I can only guess he's pissed off with hitting ::accept() too
+// much?
+#ifdef __apple__
+                xp::sleep(1);
+                return;
+#endif
+
                 if (server->perform_internal_accept(this, this->debug_info)) {
                     last_accept_time = xp::system_current_time_millis();
                     if (this->debug_info) {
@@ -588,8 +589,9 @@ auto ServerSocket::perform_internal_accept(
     AcceptedSocket* a = do_accept(client_endpoint, debug_info);
     if (a != nullptr) {
         m_nactive_accepts++;
-        if (m_nactive_accepts > m_npeak_active_accepts)
+        if (m_nactive_accepts > m_npeak_active_accepts) {
             m_npeak_active_accepts = m_nactive_accepts;
+        }
 
         m_naccepts++;
         retval = true;
@@ -705,7 +707,8 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
     auto ctx = this->pimpl->context();
     (void)ctx;
     size_t found = std::string::npos;
-    const bool debug = this->pimpl->context() && pimpl->context()->debug_info;
+    const bool debug
+        = (this->pimpl->context() != nullptr) && pimpl->context()->debug_info;
     static constexpr int timeout_ms = 20'000;
     stopwatch sw("", !debug);
     if (debug) {
@@ -713,8 +716,12 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
         sw.id_set(astr);
     }
 
+    auto attempts = 0;
+    bool warned = false;
+
     while (found == std::string::npos) {
 
+        attempts++;
         if (sw.elapsed_ms() >= timeout_ms) {
             return to_int(xp::errors_t::TIMED_OUT);
         }
@@ -722,7 +729,7 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
 
         auto retval = myread.return_value;
         if (myread.bytes_transferred > 0) {
-            printf("have data: %s\n", a->data().c_str());
+            // printf("have data: %s\n", a->data().c_str());
             found = a->data().find("\r\n\r\n");
         }
 
@@ -731,8 +738,10 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
         // even if you read what you wanted.
         if (retval == 0) {
             fprintf(stderr,
-                "client: (gracefully) disconnected during read:\n%s\n",
-                a->to_string().c_str());
+                "After %d attempts (%d ms), client: remote disconnected during "
+                "read:\n%s\nhaving read: %zu bytes\n",
+                attempts, (int)sw.elapsed_ms(), a->to_string().c_str(),
+                a->data().length());
             return to_int(errors_t::NOT_CONN);
         }
         if (retval < 0) {
@@ -763,6 +772,11 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
         }
 
         if (found != std::string::npos) {
+            static const uint64_t REASONABLE_TIME = 1000;
+            if (!warned && sw.elapsed_ms() > REASONABLE_TIME) {
+                warned = true;
+                fprintf(stderr, "Took ages for: %s\n", a->to_string().c_str());
+            }
             return 0;
         }
     }; // while (found != std::string::npos)
@@ -840,7 +854,7 @@ AcceptedSocket::AcceptedSocket(xp::sock_handle_t s,
     ServerSocket* pserver, SocketContext* ctx)
     : Sock(s, name, remote_endpoint, ctx), m_pserver(pserver) {}
 
-uint64_t xp::AcceptedSocket::id() const noexcept {
+auto xp::AcceptedSocket::id() const noexcept -> uint64_t {
     return pimpl->id();
 }
 
@@ -856,7 +870,7 @@ auto xp::AcceptedSocket::to_string() const noexcept -> std::string {
 }
 
 #ifdef _WIN32
-int xp::clock_gettime(int unused, timespec_t* spec) {
+auto xp::clock_gettime(int unused, timespec_t* spec) -> int {
     (void)unused;
     __int64 wintime;
     GetSystemTimeAsFileTime((FILETIME*)&wintime);

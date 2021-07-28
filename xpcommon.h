@@ -45,7 +45,7 @@ struct timespec_t {
     uint64_t tv_sec;
     uint64_t tv_nsec;
 }; // header part
-int clock_gettime(int unused, struct timespec_t* spec);
+auto clock_gettime(int unused, struct timespec_t* spec) -> int;
 
 inline auto system_current_time_millis() -> timepoint_t {
     [[maybe_unused]] static constexpr uint64_t ms_in_sec = 1000;

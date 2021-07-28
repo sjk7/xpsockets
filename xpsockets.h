@@ -116,8 +116,8 @@ inline auto socket_error_string(int err = -1) -> std::string {
     char* s = nullptr;
     size_t size = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER
             | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-        NULL, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPSTR)&s, 0,
-        NULL);
+        nullptr, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPSTR)&s, 0,
+        nullptr);
 
     if (s == nullptr) {
         fprintf(stderr, "Bad socket error string\n");
@@ -139,7 +139,7 @@ inline auto socket_error_string(int err = -1) -> std::string {
 #endif
 }
 
-inline std::string to_string(const errors_t e) {
+inline auto to_string(const errors_t e) -> std::string {
     return socket_error_string(to_int(e));
 }
 inline void sleep(int ms) {

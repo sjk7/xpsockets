@@ -116,7 +116,7 @@ class AcceptedSocket : public Sock {
         ServerSocket* server, SocketContext* ctx = nullptr);
     ~AcceptedSocket() override = default;
     auto server() noexcept -> ServerSocket* { return m_pserver; }
-    [[nodiscard]] uint64_t id() const noexcept;
+    [[nodiscard]] auto id() const noexcept -> uint64_t;
     void id_set(uint64_t newid) noexcept;
     [[nodiscard]] auto to_string() const noexcept -> std::string;
 

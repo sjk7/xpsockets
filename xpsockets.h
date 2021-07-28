@@ -86,7 +86,7 @@ using socklen_t = int;
 using socklen_t = ::socklen_t;
 #endif
 
-inline auto socket_error() -> int {
+inline auto socket_error() {
 #ifdef _WIN32
     return WSAGetLastError();
 #else

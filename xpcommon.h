@@ -42,19 +42,24 @@ inline auto duration(const timepoint_t a, const timepoint_t b) -> duration_t {
     return duration_t{mya - myb};
 }
 
-struct timespec_t {
+#ifdef _WIN32
+struct xptimespec_t {
     uint64_t tv_sec;
     uint64_t tv_nsec;
-}; // header part
-auto clock_gettime(int unused, struct timespec_t* spec) -> int;
+};
+
+auto clock_gettime(int dummy, xptimespec_t* spec) -> int;
+#endif
 
 inline auto system_current_time_millis() -> timepoint_t {
-    [[maybe_unused]] static constexpr uint64_t ms_in_sec = 1000;
+
 #if defined(_WIN32) || defined(_WIN64)
-    static constexpr auto nano_in_milli = 1'000'000;
-    struct timespec_t t = {};
-    clock_gettime(0, &t);
-    uint64_t retval = t.tv_nsec / nano_in_milli;
+    struct xptimespec_t _t = {};
+    const auto iret = clock_gettime(0, &_t);
+    assert(iret == 0);
+    static constexpr auto THOUSAND = 1000;
+    static constexpr auto MILLION = 1.0e6;
+    uint64_t retval = _t.tv_sec * THOUSAND + ::lround(_t.tv_nsec / MILLION);
     return timepoint_t{retval};
 
 #else

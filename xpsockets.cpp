@@ -159,7 +159,8 @@ template <typename CRTP> class SocketBase {
         } // I forgive u
         if (this->context()) {
             if (this->context()->debug_info) {
-                printf("called shutdown() on fd: %d , with id %" PRIu64 "becoz %s\n",
+                printf("called shutdown() on fd: %d , with id %" PRIu64
+                       "becoz %s\n",
                     static_cast<int>(m_fd), this->m_id, why);
             }
         }
@@ -183,15 +184,14 @@ template <typename CRTP> class SocketBase {
                 += sent >= 0 ? static_cast<size_t>(sent) : 0;
 
             if (sent < 0) {
-                perror("send");
                 const int e = xp::socket_error();
-
-                if (e == EAGAIN || e == to_int(xp::errors_t::WOULD_BLOCK)) {
+                if (e == to_int(xp::errors_t::WOULD_BLOCK)) {
                     this->m_ctx->on_idle(crtp());
                 } else {
                     this->m_last_error = e;
                     this->m_slast_error = xp::concat(
                         "error in send(): ", xp::socket_error_string(e));
+                    fprintf(stderr, "send error: %s\n", m_slast_error.c_str());
                     retval.return_value = e;
                     return retval;
                 }
@@ -426,7 +426,7 @@ ConnectingSocket::~ConnectingSocket() {
 void SocketContext::on_idle(Sock* ptr) noexcept {
     assert(ptr);
     auto pa = dynamic_cast<AcceptedSocket*>(ptr);
-    //static timepoint_t last_accept_time = xp::system_current_time_millis();
+    // static timepoint_t last_accept_time = xp::system_current_time_millis();
 
     // const duration_t accept_interval{1000};
     static auto constexpr max_concurrency = 200;
@@ -441,7 +441,7 @@ void SocketContext::on_idle(Sock* ptr) noexcept {
                     xp::sleep(1);
                     return;
                 }
-                //auto dur = xp::duration(
+                // auto dur = xp::duration(
                 //    xp::system_current_time_millis(), last_accept_time);
 // on MAC, without this, recv keeps returning -1 and would_block
 // for an insane amount of time (some seconds) when we recurse.
@@ -496,17 +496,56 @@ static inline auto get_client_endpoint(struct sockaddr_in addr_in)
     return ep;
 }
 
+static inline xp::native_socket_type native_accept(
+    xp::native_socket_type fd, sockaddr_in& addr) {
+
+    FD_SET WriteSet;
+    FD_SET ReadSet;
+    FD_ZERO(&ReadSet);
+    FD_ZERO(&WriteSet);
+    FD_SET(fd, &ReadSet);
+    int Total = 0;
+    timeval timeout = {0};
+    timeout.tv_usec = 1000;
+    if ((Total = ::select(0, &ReadSet, &WriteSet, NULL, &timeout))
+        == SOCKET_ERROR) {
+        fprintf(
+            stderr, "select() returned with error %d\n", xp::socket_error());
+        return (xp::native_socket_type)xp::invalid_handle;
+    }
+
+    assert(Total <= 1);
+
+    // did we have one, or not?
+    if (FD_ISSET(fd, &ReadSet)) {
+
+        xp::socklen_t addrlen = sizeof(addr);
+        auto ret = ::accept(fd, (struct sockaddr*)&addr, &addrlen);
+        if (ret != to_native(xp::invalid_handle)) {
+            auto x = xp::sock_set_blocking(fd, false);
+            assert(x);
+            return ret;
+        }
+    }
+
+    return to_native(xp::invalid_handle);
+}
+
 auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
     -> xp::sock_handle_t {
     struct sockaddr_in addr_in = {};
     const auto fd = xp::to_native(this->underlying_socket());
+
+    if (m_nactive_accepts > 100) {
+        xp::sleep(10); // anti-ddos
+    }
+    // const auto acc = native_accept(fd, addr_in);
     xp::socklen_t addrlen = sizeof(addr_in);
     const auto acc = ::accept(fd, (struct sockaddr*)&addr_in, &addrlen);
-
-    if (acc == -1) {
+    if (acc == to_native(xp::invalid_handle)) {
         const auto e = socket_error();
 
-        if (e == to_int(xp::errors_t::WOULD_BLOCK) || e == EAGAIN) {
+        if (e == to_int(xp::errors_t::WOULD_BLOCK)) {
             return xp::sock_handle_t::invalid;
         }
         {
@@ -590,7 +629,7 @@ auto ServerSocket::perform_internal_accept(
     AcceptedSocket* a = do_accept(client_endpoint, debug_info);
     if (a != nullptr) {
         m_nactive_accepts++;
-        if (m_nactive_accepts > m_npeak_active_accepts) {
+        if (m_nactive_accepts >= m_npeak_active_accepts) {
             m_npeak_active_accepts = m_nactive_accepts;
         }
 
@@ -743,8 +782,12 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
                 "read:\n%s\nhaving read: %zu bytes\n",
                 attempts, (int)sw.elapsed_ms(), a->to_string().c_str(),
                 a->data().length());
-            fprintf(stderr, "Note: current accepts: %lu and max_concurrent clients: %u\n",
-                    this->m_naccepts, this->m_npeak_active_accepts);
+            fprintf(stderr,
+                "Note: current active/pending accepts: %" PRIu64
+                ", max_concurrent clients: %u, current clients: %zu and peak "
+                "clients: %zu\n",
+                this->m_naccepts, this->m_npeak_active_accepts,
+                m_clients.size(), this->m_peak_clients);
             return to_int(errors_t::NOT_CONN);
         }
         if (retval < 0) {
@@ -764,7 +807,7 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
                     "%d:%s\n",
                     retval, xp::socket_error_string(retval).c_str());
                 //}
-                assert("checkme" == nullptr);
+
                 return -1; // make sure he's disconnected
             }
             fprintf(stderr,
@@ -773,12 +816,21 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
             assert("checkme" == nullptr);
             return retval;
         }
+        static const uint64_t REASONABLE_TIME = 1000;
+        if (!warned) {
+            if (sw.elapsed_ms() > REASONABLE_TIME) {
 
-        if (found != std::string::npos) {
-            static const uint64_t REASONABLE_TIME = 1000;
-            if (!warned && sw.elapsed_ms() > REASONABLE_TIME) {
                 warned = true;
                 fprintf(stderr, "Took ages for: %s\n", a->to_string().c_str());
+                fprintf(stderr, "When took ages, client buffer has:%s\n",
+                    a->data().c_str());
+            }
+        }
+        if (found != std::string::npos) {
+            if (warned) {
+                fprintf(stderr, "Slow client accepted, finally: %s\n",
+                    a->to_string().c_str());
+                fprintf(stderr, "\n");
             }
             return 0;
         }
@@ -830,12 +882,14 @@ auto ServerSocket::remove_client(
         if (debug) {
             printf("\n\nCurrent number of connected clients: %d\n",
                 (int)m_clients.size());
-            printf("Peak number of connected clients: %zd, at timestamp %" PRIu64 "\n",
+            printf(
+                "Peak number of connected clients: %zd, at timestamp %" PRIu64
+                "\n",
                 this->peak_num_clients(), to_int(this->peaked_when()));
             const auto ms_ago = xp::duration(
                 xp::system_current_time_millis(), this->peaked_when());
-            printf(
-                "This was: %" PRIu64 " seconds ago\n", to_int(ms_ago) / xp::ms_in_sec);
+            printf("This was: %" PRIu64 " seconds ago\n",
+                to_int(ms_ago) / xp::ms_in_sec);
         }
         delete client_to_remove;
         if (debug) {
@@ -873,17 +927,45 @@ auto xp::AcceptedSocket::to_string() const noexcept -> std::string {
 }
 
 #ifdef _WIN32
-auto xp::clock_gettime(int unused, timespec_t* spec) -> int {
-    (void)unused;
+
+static auto constexpr exp7 = 10000000I64;
+static auto constexpr exp9 = 1000000000I64; // 1E+9
+static auto constexpr w2ux = 116444736000000000I64; // 1.jan1601 to 1.jan1970
+static auto constexpr HUNDRED = 100;
+void unix_time(struct xp::xptimespec_t* spec) {
     __int64 wintime;
     GetSystemTimeAsFileTime((FILETIME*)&wintime);
-    static constexpr int64_t seconds = 10000000I64;
-    static constexpr int64_t HUNDRED = 100;
-    static constexpr int64_t DATE_MAGIC
-        = 116444736000000000I64; // 1jan1601 to 1jan1970;
-    wintime -= DATE_MAGIC;
-    spec->tv_sec = wintime / seconds; // seconds
-    spec->tv_nsec = wintime % seconds * HUNDRED; // nano-seconds
+    wintime -= w2ux;
+    spec->tv_sec = wintime / exp7;
+    spec->tv_nsec = wintime % exp7 * HUNDRED;
+}
+
+int xp::clock_gettime(int dummy, xptimespec_t* spec) {
+    (void)dummy;
+    static struct xptimespec_t startspec;
+    static double ticks2nano = 0;
+    static __int64 startticks = 0;
+    static __int64 tps = -1;
+    __int64 tmp = 0;
+    __int64 curticks = 0;
+    QueryPerformanceFrequency((LARGE_INTEGER*)&tmp); // some strange system can
+    if (tps != tmp) {
+        tps = tmp; // init ~~ONCE         //possibly change freq ?
+        QueryPerformanceCounter((LARGE_INTEGER*)&startticks);
+        unix_time(&startspec);
+        ticks2nano = (double)exp9 / tps;
+    }
+    QueryPerformanceCounter((LARGE_INTEGER*)&curticks);
+    curticks -= startticks;
+    spec->tv_sec = startspec.tv_sec + (curticks / tps);
+    spec->tv_nsec = static_cast<uint64_t>(
+        startspec.tv_nsec + (double)(curticks % tps) * ticks2nano);
+
+    if (!(spec->tv_nsec < exp9)) {
+        spec->tv_sec++;
+        spec->tv_nsec -= exp9;
+    }
     return 0;
 }
+
 #endif

@@ -25,6 +25,16 @@
 using namespace std;
 using namespace xp;
 
+static inline auto mypoll(const xp::native_socket_type fd) {
+    short find_events = POLLIN;
+    short found_events = 0;
+    struct pollfd pollfds[1] = {{fd, find_events, found_events}};
+
+    const auto n = poll(pollfds, 1, 10);
+
+    return n;
+}
+
 inline auto default_context_instance() -> SocketContext& {
     static SocketContext ctx;
     return ctx;
@@ -64,7 +74,8 @@ template <typename CRTP> class SocketBase {
         , m_ctx(ctx)
         , m_pcrtp(sck)
         , m_endpoint(std::move(endpoint)) {
-        const auto bl = sock_set_blocking(to_native(m_fd), false);
+        const auto bl = sock_set_blocking(to_native(m_fd), true);
+        m_blocking = true;
         if (!bl) {
             throw std::runtime_error(
                 concat("Unable to set blocking mode, for: ", m_name, "\n",
@@ -114,7 +125,8 @@ template <typename CRTP> class SocketBase {
             throw std::runtime_error("No system resources to create socket");
         }
 
-        const auto bl = sock_set_blocking(to_native(m_fd), false);
+        const auto bl = sock_set_blocking(to_native(m_fd), true);
+        m_blocking = true;
         if (!bl) {
             throw std::runtime_error(
                 concat("Unable to set blocking mode, for: ", m_name, "\n",
@@ -207,6 +219,7 @@ template <typename CRTP> class SocketBase {
             remain -= sz;
         };
 
+        assert(retval.bytes_transferred == sv.size());
         return retval;
     }
 
@@ -217,7 +230,31 @@ template <typename CRTP> class SocketBase {
     auto read(std::string& data, read_callback_t* read_callback,
         xp::msec_timeout_t timeout) -> xp::ioresult_t {
 
+        xp::ioresult_t ret{0, 0};
         sockstate_wrapper_t w(this->m_state, sockstate_t::in_recv);
+        int pollres = 0;
+        auto polldur = xp::duration_t{timeout};
+        stopwatch sw("read timer", true);
+
+        if (this->is_blocking()) {
+            while (pollres <= 0) {
+                pollres = mypoll(to_native(this->m_fd));
+                if (pollres < 0) {
+                    auto e = errno;
+                    if (e == EINTR) {
+                        continue;
+                    }
+                }
+                if (pollres <= 0) {
+                    // nothing to read
+                    m_ctx->on_idle(crtp());
+                }
+                if (sw.elapsed() >= polldur) {
+                    ret.return_value = to_int(xp::errors_t::TIMED_OUT);
+                    return ret;
+                }
+            };
+        }
 
         if (m_tmp.empty()) {
             // ok so this means a heap allocation once per client, but:
@@ -225,7 +262,7 @@ template <typename CRTP> class SocketBase {
             // and so on. (heavy traffic)
             m_tmp.resize(DEFAULT_BUFFER_SIZE + CONTINGENCY);
         }
-        xp::ioresult_t ret{0, 0};
+
         auto sck = xp::to_native(m_fd);
 
         const auto time_start = xp::system_current_time_millis();
@@ -452,13 +489,13 @@ void SocketContext::on_idle(Sock* ptr) noexcept {
     assert(ptr);
     auto pa = dynamic_cast<AcceptedSocket*>(ptr);
 
-    static auto constexpr max_concurrency = 100;
+    static auto constexpr max_concurrency = 500;
 
     if (pa != nullptr) {
         auto server = pa->server();
 
         if (server != nullptr) {
-            if (!server->is_blocking()) {
+            if (true) {
                 if (server->m_nactive_accepts >= max_concurrency) {
                     // avoid stack overflow??
                     xp::sleep(1);
@@ -524,23 +561,12 @@ static inline auto native_accept(xp::native_socket_type fd, sockaddr_in& addr)
     -> xp::native_socket_type {
 
     const auto empty_ret = to_native(xp::invalid_handle);
-    /*/
-    auto len = xp::socklen_t{sizeof(addr)};
-    const auto accept_fd = accept(fd, (sockaddr*)&addr, &len);
-    return accept_fd;
-    /*/
-    short find_events = POLLIN;
-    short found_events = 0;
-    struct pollfd pollfds[1] = {{fd, find_events, found_events}};
 
-    const auto n = 0; //
-    // poll(pollfds, 1, 10);
-    assert(n >= 0);
-    assert(n <= 1); // I only expect one at a time
+    const auto n = mypoll(fd);
     if (n >= 1) {
         auto len = xp::socklen_t{sizeof(addr)};
         const auto accept_fd = accept(fd, (sockaddr*)&addr, &len);
-
+        assert(accept_fd != to_native(xp::invalid_handle));
         return xp::native_socket_type(accept_fd);
     }
     return empty_ret;
@@ -554,9 +580,9 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
     if (m_nactive_accepts > 100) {
         xp::sleep(10); // anti-ddos
     }
-    // const auto acc = native_accept(fd, addr_in);
-    xp::socklen_t addrlen = sizeof(addr_in);
-    const auto acc = ::accept(fd, (struct sockaddr*)&addr_in, &addrlen);
+    const auto acc = native_accept(fd, addr_in);
+    // xp::socklen_t addrlen = sizeof(addr_in);
+    // const auto acc = ::accept(fd, (struct sockaddr*)&addr_in, &addrlen);
     if (acc == to_native(xp::invalid_handle)) {
         const auto e = socket_error();
 
@@ -661,7 +687,7 @@ auto ServerSocket::perform_internal_accept(
 
 void SocketContext::run(ServerSocket* server) {
     assert(server);
-    assert(!server->is_blocking());
+    // assert(!server->is_blocking());
     this->on_start(server);
 
     while (this->should_run) {
@@ -776,7 +802,19 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
                   return 0;
               });
         if (good) {
-            a->send(a->data());
+            auto sent = a->send(hdr);
+            if (sent.bytes_transferred != hdr.size()) {
+                fprintf(stderr,
+                    "****Did not send all header data: sent = %d, serr =%s\n",
+                    sent.return_value, a->last_error_string().c_str());
+            }
+
+            sent = a->send(a->data());
+            if (sent.bytes_transferred != a->data().size()) {
+                fprintf(stderr,
+                    "****Did not send all body data: sent = %d, serr =%s\n",
+                    sent.return_value, a->last_error_string().c_str());
+            }
             return -1;
         }
         if (myread.return_value == 0) {

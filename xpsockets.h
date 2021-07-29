@@ -22,6 +22,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <sys/select.h>
+#include <sys/ioctl.h>
 #else
 #include <WinSock2.h>
 #include <Windows.h>
@@ -173,10 +174,11 @@ auto sock_set_blocking(native_socket_type fd, bool blocking) -> bool {
     unsigned long mode = blocking ? 0 : 1;
     return ioctlsocket(fd, FIONBIO, &mode) == 0;
 #else
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags == -1) return false;
-    flags = blocking ? (flags & ~O_NONBLOCK) : (flags | O_NONBLOCK);
-    return (fcntl(fd, F_SETFL, flags) == 0) ? true : false;
+    int on = blocking ? 0 : 1;
+    const auto rc = ioctl(fd, FIONBIO, (char*)&on) == 0;
+    assert(rc == true);
+    return rc;
+
 #endif
 }
 struct addrinfo_wrapper {

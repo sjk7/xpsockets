@@ -59,6 +59,7 @@ class SocketContext {
     static void sleep(long ms) noexcept;
     virtual void run(ServerSocket* server);
     bool should_run{true};
+
 #if defined(_DEBUG) || !defined(NDEBUG)
     bool debug_info{true};
 #else

@@ -15,3 +15,5 @@ HEADERS += \
 win32:{
     LIBS += -lws2_32 -lwinmm
 }
+
+unix: release: DEFINES += NDEBUG

@@ -51,7 +51,7 @@ class SocketContext {
     virtual void run(ServerSocket* server);
     bool should_run{true};
 #if defined(_DEBUG) || !defined(NDEBUG)
-    bool debug_info{false};
+    bool debug_info{true};
 #else
     bool debug_info{false};
 #endif

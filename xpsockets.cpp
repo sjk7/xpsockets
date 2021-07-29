@@ -11,6 +11,10 @@
 #include <string_view>
 #include <algorithm> // remove_if
 
+#ifndef _WIN32
+#include <poll.h>
+#endif
+
 #ifdef _MSC_VER
 #ifdef assert
 #undef assert
@@ -211,7 +215,7 @@ template <typename CRTP> class SocketBase {
         sockstate_wrapper_t w(this->m_state, sockstate_t::in_recv);
         xp::ioresult_t ret{0, 0};
         auto sck = xp::to_native(m_fd);
-        static constexpr size_t BUFSIZE = 512;
+        static constexpr size_t BUFSIZE = 16;
         const auto time_start = xp::system_current_time_millis();
         assert(this->m_fd != xp::invalid_handle);
 
@@ -221,7 +225,21 @@ template <typename CRTP> class SocketBase {
             assert(this->m_fd != xp::invalid_handle);
             int read = ::recv(sck, tmp.data(), BUFSIZE, 0);
             ret.return_value = read;
+            // grab the errors straight away coz of concurrency
+            if (read < 0) {
+                int ierror{0};
+                auto len = xp::socklen_t(sizeof(ierror));
 
+                auto gso
+                    = getsockopt(sck, SOL_SOCKET, SO_ERROR, &ierror, &len) < 0;
+                assert(gso == 0);
+                if (ierror) {
+                    printf("socket internal error code: %d : %s\n", ierror,
+                        xp::socket_error_string((ierror)).c_str());
+
+                    m_slast_error = xp::socket_error_string(ierror);
+                }
+            }
             if (read == 0) {
                 m_last_error = to_int(xp::errors_t::NOT_CONN);
                 m_slast_error = concat("Client closed socket during read(): ",
@@ -441,16 +459,6 @@ void SocketContext::on_idle(Sock* ptr) noexcept {
                     xp::sleep(1);
                     return;
                 }
-                // auto dur = xp::duration(
-                //    xp::system_current_time_millis(), last_accept_time);
-// on MAC, without this, recv keeps returning -1 and would_block
-// for an insane amount of time (some seconds) when we recurse.
-// I can only guess he's pissed off with hitting ::accept() too
-// much?
-#ifdef __apple__
-                xp::sleep(1);
-                return;
-#endif
 
                 if (server->perform_internal_accept(this, this->debug_info)) {
                     // last_accept_time = xp::system_current_time_millis();
@@ -499,36 +507,26 @@ static inline auto get_client_endpoint(struct sockaddr_in addr_in)
 static inline xp::native_socket_type native_accept(
     xp::native_socket_type fd, sockaddr_in& addr) {
 
-    FD_SET WriteSet;
-    FD_SET ReadSet;
-    FD_ZERO(&ReadSet);
-    FD_ZERO(&WriteSet);
-    FD_SET(fd, &ReadSet);
-    int Total = 0;
-    timeval timeout = {0};
-    timeout.tv_usec = 1000;
-    if ((Total = ::select(0, &ReadSet, &WriteSet, NULL, &timeout))
-        == SOCKET_ERROR) {
-        fprintf(
-            stderr, "select() returned with error %d\n", xp::socket_error());
-        return (xp::native_socket_type)xp::invalid_handle;
+    const auto empty_ret = to_native(xp::invalid_handle);
+    /*/
+    auto len = xp::socklen_t{sizeof(addr)};
+    const auto accept_fd = accept(fd, (sockaddr*)&addr, &len);
+    return accept_fd;
+    /*/
+    short find_events = POLLIN;
+    short found_events = 0;
+    struct pollfd pollfds[1] = {{fd, find_events, found_events}};
+
+    const auto n = ::poll(pollfds, 1, 10);
+    assert(n >= 0);
+    assert(n <= 1); // I only expect one at a time
+    if (n >= 1) {
+        auto len = xp::socklen_t{sizeof(addr)};
+        const auto accept_fd = accept(fd, (sockaddr*)&addr, &len);
+
+        return xp::native_socket_type(accept_fd);
     }
-
-    assert(Total <= 1);
-
-    // did we have one, or not?
-    if (FD_ISSET(fd, &ReadSet)) {
-
-        xp::socklen_t addrlen = sizeof(addr);
-        auto ret = ::accept(fd, (struct sockaddr*)&addr, &addrlen);
-        if (ret != to_native(xp::invalid_handle)) {
-            auto x = xp::sock_set_blocking(fd, false);
-            assert(x);
-            return ret;
-        }
-    }
-
-    return to_native(xp::invalid_handle);
+    return empty_ret;
 }
 
 auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
@@ -545,7 +543,9 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
     if (acc == to_native(xp::invalid_handle)) {
         const auto e = socket_error();
 
-        if (e == to_int(xp::errors_t::WOULD_BLOCK)) {
+        if (e == to_int(xp::errors_t::WOULD_BLOCK)
+            || e == to_int(xp::errors_t::TIMED_OUT)
+            || e == to_int(xp::errors_t::NONE)) {
             return xp::sock_handle_t::invalid;
         }
         {
@@ -563,7 +563,7 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
             printf("ServerSocket '%s' asked to accept a client\n",
                 this->name().data());
 
-            printf("client ip: %s ::accept()ed\n",
+            printf("Allocated fd %d to client ip: %s ::accept()ed\n", acc,
                 xp::to_string(client_endpoint).c_str());
         }
         return static_cast<xp::sock_handle_t>(acc);
@@ -575,6 +575,7 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
 auto ServerSocket::do_accept(xp::endpoint_t& client_endpoint,
     bool debug_info) noexcept -> AcceptedSocket* {
     xp::sock_handle_t s = accept(client_endpoint, debug_info);
+
     if (s == xp::sock_handle_t::invalid) {
         return nullptr;
     }
@@ -627,6 +628,7 @@ auto ServerSocket::perform_internal_accept(
     assert(ctx);
     xp::endpoint_t client_endpoint{};
     AcceptedSocket* a = do_accept(client_endpoint, debug_info);
+
     if (a != nullptr) {
         m_nactive_accepts++;
         if (m_nactive_accepts >= m_npeak_active_accepts) {
@@ -842,8 +844,7 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
 auto ServerSocket::remove_client(
     AcceptedSocket* client_to_remove, const char* why) -> bool {
 
-    const auto server = client_to_remove->server();
-    const auto ctx = server->pimpl->context();
+    const auto ctx = this->pimpl->context();
     bool debug = false;
     if (ctx != nullptr) {
         debug = ctx->debug_info;
@@ -862,11 +863,13 @@ auto ServerSocket::remove_client(
                     printf("reason %s\n", why);
                 }
                 client->pimpl->shutdown(xp::shutdown_how::TX, why);
+                client->pimpl->close();
+
                 if (b) {
                     client = nullptr;
                 }
             }
-            return b;
+            return true;
         });
     bool ret = it != m_clients.end();
     assert(ret);
@@ -875,31 +878,24 @@ auto ServerSocket::remove_client(
         m_clients.erase(it);
     }
 
-    auto s = client_to_remove->server();
+    if (debug) {
+        printf("\n\nCurrent number of connected clients: %d\n",
+            (int)m_clients.size());
+        printf("Peak number of connected clients: %zd, at timestamp %" PRIu64
+               "\n",
+            this->peak_num_clients(), to_int(this->peaked_when()));
+        const auto ms_ago = xp::duration(
+            xp::system_current_time_millis(), this->peaked_when());
+        printf("This was: %" PRIu64 " seconds ago\n",
+            to_int(ms_ago) / xp::ms_in_sec);
+    }
+    delete client_to_remove;
+    if (debug) {
 
-    if (s != nullptr) {
-
-        if (debug) {
-            printf("\n\nCurrent number of connected clients: %d\n",
-                (int)m_clients.size());
-            printf(
-                "Peak number of connected clients: %zd, at timestamp %" PRIu64
-                "\n",
-                this->peak_num_clients(), to_int(this->peaked_when()));
-            const auto ms_ago = xp::duration(
-                xp::system_current_time_millis(), this->peaked_when());
-            printf("This was: %" PRIu64 " seconds ago\n",
-                to_int(ms_ago) / xp::ms_in_sec);
-        }
-        delete client_to_remove;
-        if (debug) {
-
-            printf("Current number of clients: %zu\n", m_clients.size());
-            if (m_clients.empty()) {
-                printf(
-                    "Longest alive socket: %s\n", longest_alive_data().c_str());
-                printf("\n");
-            }
+        printf("Current number of clients: %zu\n", m_clients.size());
+        if (m_clients.empty()) {
+            printf("Longest alive socket: %s\n", longest_alive_data().c_str());
+            printf("\n");
         }
     }
 

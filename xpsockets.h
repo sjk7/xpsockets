@@ -21,6 +21,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <sys/select.h>
 #else
 #include <WinSock2.h>
 #include <Windows.h>
@@ -94,17 +95,6 @@ inline auto socket_error() {
         puts("quoi?");
     }
     return errno;
-#endif
-}
-
-inline void socket_error_set(int err) {
-#ifdef _WIN32
-    if (err == EAGAIN) {
-        err = WSAEWOULDBLOCK;
-    }
-    WSASetLastError(err);
-#else
-    errno = err;
 #endif
 }
 
@@ -260,7 +250,6 @@ inline auto sock_connect(const xp::sock_handle_t sock, const xp::endpoint_t& ep,
     }
 
     if (took >= to_int(t)) {
-        xp::socket_error_set(to_int(xp::errors_t::TIMED_OUT));
         ret = to_int(xp::errors_t::TIMED_OUT);
     } else {
         printf("Connected to host in %d ms.\n", took);

@@ -62,6 +62,15 @@ inline auto to_int(const errors_t e) -> int32_t {
     return static_cast<int32_t>(e);
 }
 
+inline auto error_can_continue(const errors_t e) {
+    return e == errors_t::WOULD_BLOCK;
+}
+
+inline auto error_can_continue(const int e) {
+    errors_t err{e};
+    return err == errors_t::WOULD_BLOCK;
+}
+
 #ifdef _WIN32
 inline auto init_sockets() -> int {
     int iResult = 0;

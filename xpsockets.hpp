@@ -27,14 +27,23 @@ inline constexpr std::string_view simple_http_response
       "Connection: close\r\n"
       "Server: C++Test server\r\n"
       "Content-Length: xxxx\r\n\r\n";
+
+inline constexpr std::string_view simple_http_response_no_cl
+    = "HTTP/1.1 200 OK\r\n"
+      "Content-Type: text/html\r\n"
+      "Connection: close\r\n"
+      "Server: C++Test server\r\n\r\n";
+
 struct read_callback_t {
-    virtual auto new_data(int read_result, std::string& data) noexcept -> int
+    virtual auto new_data(int read_result, const std::string_view) noexcept
+        -> int
         = 0;
 };
 
 template <typename F> struct rcb_t : read_callback_t {
     F&& m_f;
-    auto new_data(int read_result, std::string& data) noexcept -> int override {
+    auto new_data(int read_result, const std::string_view data) noexcept
+        -> int override {
         return m_f(read_result, data);
     }
     rcb_t(F&& f) : m_f(std::forward<F>(f)) {}
@@ -75,9 +84,10 @@ class Sock {
     auto send(std::string_view data) noexcept -> xp::ioresult_t;
 
     template <typename F>
-    auto read2(std::string& data, F&& f) -> xp::ioresult_t {
+    auto read2(xp::msec_timeout_t t, std::string& data, F&& f)
+        -> xp::ioresult_t {
         rcb_t rcb(std::forward<F>(f));
-        return read(data, &rcb);
+        return read(data, &rcb, t);
     }
     // returns:
     // ret.return_value: return whatever recv returns, or < 0 if some error
@@ -182,6 +192,7 @@ class ServerSocket : public Sock {
     uint64_t m_naccepts{0};
     uint32_t m_nactive_accepts{0};
     uint32_t m_npeak_active_accepts{0};
+    uint64_t m_nclients_disconnected_during_read{0};
 };
 
 } // namespace xp

@@ -186,6 +186,7 @@ template <typename CRTP> class SocketBase {
             int sent = ::send(sck, ptr, sz, 0);
             retval.bytes_transferred
                 += sent >= 0 ? static_cast<size_t>(sent) : 0;
+            retval.return_value = sent;
 
             if (sent < 0) {
                 const int e = xp::socket_error();
@@ -205,42 +206,48 @@ template <typename CRTP> class SocketBase {
             }
             remain -= sz;
         };
-        assert(retval.return_value == 0);
+
         return retval;
     }
+
+    static constexpr auto CONTINGENCY = 4;
+    static constexpr auto DEFAULT_BUFFER_SIZE = 8192;
+    static constexpr auto BUFSIZE = DEFAULT_BUFFER_SIZE;
 
     auto read(std::string& data, read_callback_t* read_callback,
         xp::msec_timeout_t timeout) -> xp::ioresult_t {
 
         sockstate_wrapper_t w(this->m_state, sockstate_t::in_recv);
+
+        if (m_tmp.empty()) {
+            // ok so this means a heap allocation once per client, but:
+            // not using a stack buffer to avoid stack overflow during ab tests
+            // and so on. (heavy traffic)
+            m_tmp.resize(DEFAULT_BUFFER_SIZE + CONTINGENCY);
+        }
         xp::ioresult_t ret{0, 0};
         auto sck = xp::to_native(m_fd);
-        static constexpr size_t BUFSIZE = 16;
+
         const auto time_start = xp::system_current_time_millis();
         assert(this->m_fd != xp::invalid_handle);
+        auto minus1err = 0;
 
         while (true) {
-            std::array<char, BUFSIZE> tmp = {};
+
             // WHO is closing us when we are in recv, ffs?
             assert(this->m_fd != xp::invalid_handle);
-            int read = ::recv(sck, tmp.data(), BUFSIZE, 0);
-            ret.return_value = read;
+            int read = recv(sck, m_tmp.data(), BUFSIZE, 0);
+
             // grab the errors straight away coz of concurrency
             if (read < 0) {
-                int ierror{0};
-                auto len = xp::socklen_t(sizeof(ierror));
-
-                auto gso
-                    = getsockopt(sck, SOL_SOCKET, SO_ERROR, &ierror, &len) < 0;
-                assert(gso == 0);
-                if (ierror) {
-                    printf("socket internal error code: %d : %s\n", ierror,
-                        xp::socket_error_string((ierror)).c_str());
-
-                    m_slast_error = xp::socket_error_string(ierror);
-                }
+                minus1err = xp::socket_error();
+                assert(minus1err);
+                ret.return_value = minus1err;
+                // m_last_error = xp::socket_error();
+                // assert(m_last_error); // why? it returned -1
             }
             if (read == 0) {
+                ret.return_value = to_int(xp::errors_t::NOT_CONN);
                 m_last_error = to_int(xp::errors_t::NOT_CONN);
                 m_slast_error = concat("Client closed socket during read(): ",
                     xp::socket_error_string(m_last_error));
@@ -251,51 +258,50 @@ template <typename CRTP> class SocketBase {
             }
 
             if (read < 0) {
-                m_last_error = xp::socket_error();
-                assert(m_last_error); // why? it returned -1
+                assert(minus1err);
+                m_last_error = minus1err;
                 const auto dur = xp::duration(
                     xp::system_current_time_millis(), time_start);
                 if (static_cast<int>(to_int(dur)) > to_int(timeout)) {
                     m_last_error = to_int(xp::errors_t::TIMED_OUT);
                     m_slast_error = "Timed out in read() waiting for data";
-                    ret.return_value = -to_int(xp::errors_t::TIMED_OUT);
+                    ret.return_value = to_int(xp::errors_t::TIMED_OUT);
                     ret.bytes_transferred = 0;
                     assert(ret.return_value != -1);
                     return ret;
                 }
-                if (m_last_error == EAGAIN
-                    || m_last_error == to_int(xp::errors_t::WOULD_BLOCK)) {
+                if (m_last_error == to_int(xp::errors_t::WOULD_BLOCK)) {
                     // m_slast_error = xp::socket_error_string();
                     // ^^ save some cpu, we prolly don't need to do this as
                     // failure is almost guaranteed: it's how sockets work!
                     this->m_ctx->on_idle(crtp());
-                    ret.return_value = -m_last_error;
+                    ret.return_value = m_last_error;
                     return ret;
                 }
                 m_slast_error
                     = xp::concat("unexpected return value of: ", m_last_error,
                         socket_error_string(m_last_error));
-                ret.return_value = -m_last_error;
                 assert(ret.return_value != -1);
                 return ret;
             }
-            {
-                if (read > 0) {
-                    ret.bytes_transferred += static_cast<size_t>(read);
-                    const auto old_size = data.size();
-                    data.resize(data.size() + static_cast<size_t>(read));
-                    memcpy(data.data() + old_size, tmp.data(),
-                        static_cast<size_t>(read));
-                    assert(ret.return_value != -1);
-                }
-                if (read_callback != nullptr) {
-                    const auto cbret = read_callback->new_data(read, data);
-                    // DO NOT make ret == cbret, as it may confuse users.
-                    // Just return immediately if callback returns non-zero.
-                    if (cbret != 0) {
-                        assert(ret.return_value != -1);
-                        return ret;
-                    }
+
+            if (read > 0) {
+                ret.return_value = 0;
+                // printf("Got data: %s\n", m_tmp.data());
+                const auto old_size = data.size();
+                data.resize(data.size() + static_cast<size_t>(read));
+                memcpy(data.data() + old_size, m_tmp.data(),
+                    static_cast<size_t>(read));
+                // printf("Got cumulative data: %s\n", data.c_str());
+                ret.bytes_transferred += static_cast<size_t>(read);
+                assert(ret.return_value != -1);
+            }
+            if (read_callback != nullptr) {
+                const auto cbret = read_callback->new_data(
+                    read, std::string_view{m_tmp.data(), size_t(read)});
+                if (cbret != 0) {
+                    ret.return_value = cbret;
+                    return ret;
                 }
             }
 
@@ -344,6 +350,7 @@ template <typename CRTP> class SocketBase {
     xp::timepoint_t m_ms_create{0};
     sockstate_t m_state{sockstate_t::none};
     uint64_t m_id{0};
+    std::vector<char> m_tmp;
 };
 
 class Sock::Impl : public SocketBase<Sock> {
@@ -444,10 +451,8 @@ ConnectingSocket::~ConnectingSocket() {
 void SocketContext::on_idle(Sock* ptr) noexcept {
     assert(ptr);
     auto pa = dynamic_cast<AcceptedSocket*>(ptr);
-    // static timepoint_t last_accept_time = xp::system_current_time_millis();
 
-    // const duration_t accept_interval{1000};
-    static auto constexpr max_concurrency = 200;
+    static auto constexpr max_concurrency = 100;
 
     if (pa != nullptr) {
         auto server = pa->server();
@@ -461,9 +466,9 @@ void SocketContext::on_idle(Sock* ptr) noexcept {
                 }
 
                 if (server->perform_internal_accept(this, this->debug_info)) {
-                    // last_accept_time = xp::system_current_time_millis();
                     if (this->debug_info) {
-                        puts("*****************on_idle caused another socket "
+                        puts("*****************on_idle caused another "
+                             "socket "
                              "to be "
                              "::accept()ed****************\n\n");
                     }
@@ -489,8 +494,8 @@ void SocketContext::sleep(long ms) noexcept {
     xp::sleep(ms);
 }
 
-static inline auto get_client_endpoint(struct sockaddr_in addr_in)
-    -> xp::endpoint_t {
+static inline void get_client_endpoint(
+    struct sockaddr_in addr_in, xp::endpoint_t& result) {
     std::array<char, INET6_ADDRSTRLEN + 1> client_ip = {};
     const auto ntop_ret = ::inet_ntop(
         AF_INET, &addr_in.sin_addr, client_ip.data(), INET6_ADDRSTRLEN + 1);
@@ -500,12 +505,23 @@ static inline auto get_client_endpoint(struct sockaddr_in addr_in)
         throw std::runtime_error("ntop_ret failed. Bad address?");
     }
     int client_port = ntohs(addr_in.sin_port);
-    xp::endpoint_t ep{client_ip.data(), (uint32_t)client_port};
-    return ep;
+    result.address = client_ip.data();
+    result.port = (uint32_t)client_port;
+    return;
 }
 
-static inline xp::native_socket_type native_accept(
-    xp::native_socket_type fd, sockaddr_in& addr) {
+#ifdef _WIN32
+auto poll() -> int {
+    int ret = 0;
+    WSAPOLLFD fds[1] = {};
+
+    // ret = ::WSAPoll(fds, nfds, 1);
+    return -1;
+}
+#endif
+
+static inline auto native_accept(xp::native_socket_type fd, sockaddr_in& addr)
+    -> xp::native_socket_type {
 
     const auto empty_ret = to_native(xp::invalid_handle);
     /*/
@@ -517,7 +533,8 @@ static inline xp::native_socket_type native_accept(
     short found_events = 0;
     struct pollfd pollfds[1] = {{fd, find_events, found_events}};
 
-    const auto n = ::poll(pollfds, 1, 10);
+    const auto n = 0; //
+    // poll(pollfds, 1, 10);
     assert(n >= 0);
     assert(n <= 1); // I only expect one at a time
     if (n >= 1) {
@@ -558,13 +575,14 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
         }
     } else {
         // accepted!
-        client_endpoint = get_client_endpoint(addr_in);
+        endpoint_t ep;
+        get_client_endpoint(addr_in, ep);
         if (debug_info) {
             printf("ServerSocket '%s' asked to accept a client\n",
                 this->name().data());
 
-            printf("Allocated fd %d to client ip: %s ::accept()ed\n", acc,
-                xp::to_string(client_endpoint).c_str());
+            printf("Allocated fd %ld to client ip: %s ::accept()ed\n",
+                long(acc), xp::to_string(client_endpoint).c_str());
         }
         return static_cast<xp::sock_handle_t>(acc);
     }
@@ -594,30 +612,6 @@ auto ServerSocket::do_accept(xp::endpoint_t& client_endpoint,
 auto ServerSocket::on_after_accept_new_client(
     SocketContext* ctx, AcceptedSocket* a, bool debug_info) noexcept -> int {
 
-    (void)ctx;
-    xp::stopwatch write_timer("writing response: ", !ctx->debug_info);
-    std::string hdr(xp::simple_http_response);
-    auto find = std::string_view{"xxxx"};
-    hdr.replace(
-        hdr.find(find), find.length(), std::to_string(a->data().size()));
-
-    auto sent = a->send(hdr);
-    if (debug_info) {
-        printf("sent returned(when sending header) : %d, and "
-               "bytes_transferred=%zu\n",
-            sent.return_value, sent.bytes_transferred);
-    }
-    if (sent.return_value != 0) {
-        printf("send failed for fd: %d, with id %" PRIu64 "\n",
-            static_cast<int>(a->pimpl->fd()), a->pimpl->id());
-    }
-    assert(sent.return_value == 0 && sent.bytes_transferred == hdr.length());
-    sent = a->send(a->data());
-    if (debug_info) {
-        printf("sent returned(when sending data) : %d, and "
-               "bytes_transferred=%zu\n",
-            sent.return_value, sent.bytes_transferred);
-    }
     return -1; // to signify client socket should go away now
 }
 
@@ -631,13 +625,15 @@ auto ServerSocket::perform_internal_accept(
 
     if (a != nullptr) {
         m_nactive_accepts++;
-        if (m_nactive_accepts >= m_npeak_active_accepts) {
+        if (m_nactive_accepts > m_npeak_active_accepts) {
             m_npeak_active_accepts = m_nactive_accepts;
+            // printf("peak active accepts: %ld\n\n", m_npeak_active_accepts);
         }
 
         m_naccepts++;
         retval = true;
         int should_accept = on_new_client(a);
+        m_nactive_accepts--;
 
         if (should_accept == 0) {
             const auto oaa = on_after_accept_new_client(ctx, a, debug_info);
@@ -658,7 +654,6 @@ auto ServerSocket::perform_internal_accept(
                     .c_str());
             retval = false;
         }
-        m_nactive_accepts--;
     }
 
     return retval;
@@ -718,8 +713,7 @@ auto ServerSocket::listen() -> int {
     }
     // if this is set low, ab complains about: apr_socket_recv: Connection reset
     // by peer (104)
-    const auto max_conn = SOMAXCONN;
-    rc = ::listen(sock, max_conn);
+    rc = ::listen(sock, SOMAXCONN);
     if (rc < 0) {
         throw std::runtime_error(
             concat("Unable to listen on: ", to_string(pimpl->endpoint()),
@@ -760,36 +754,82 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
 
     auto attempts = 0;
     bool warned = false;
+    xp::msec_timeout_t t = xp::msec_timeout_t::default_timeout;
+    xp::duration_t dur{30000};
+    bool good = false;
+    const auto hdr = std::string_view{xp::simple_http_response_no_cl};
 
+    while (found == std::string::npos) {
+
+        auto myread
+            = a->read2(t, a->data(), [&](auto& bytes_read, auto& mydata) {
+                  assert(bytes_read); // should only return to us when data
+                                      // ready, or fail with timeout
+
+                  const auto found = a->data().find("\r\n\r\n");
+                  if (found != std::string::npos) {
+                      good = true;
+                      return 1;
+                  }
+                  sw.restart();
+
+                  return 0;
+              });
+        if (good) {
+            a->send(a->data());
+            return -1;
+        }
+        if (myread.return_value == 0) {
+            this->m_nclients_disconnected_during_read++;
+            return -1;
+        }
+        if (!xp::error_can_continue(myread.return_value)) {
+            return myread.return_value;
+        }
+
+        if (sw.elapsed() > dur) {
+            return to_int(xp::errors_t::TIMED_OUT);
+        }
+    }
+
+    assert(0); // dunno how we got here!
+
+    /*/
     while (found == std::string::npos) {
 
         attempts++;
         if (sw.elapsed_ms() >= timeout_ms) {
             return to_int(xp::errors_t::TIMED_OUT);
         }
-        auto myread = a->read(a->data(), nullptr);
 
         auto retval = myread.return_value;
         if (myread.bytes_transferred > 0) {
-            // printf("have data: %s\n", a->data().c_str());
+            printf("have data: %s\n", a->data().c_str());
             found = a->data().find("\r\n\r\n");
+            if (found == std::string::npos) {
+                found = a->data().find("\n\n");
+            }
         }
 
         // return this first if it happens,
         // as you won't be able to do any more with this socket,
         // even if you read what you wanted.
         if (retval == 0) {
+
             fprintf(stderr,
                 "After %d attempts (%d ms), client: remote disconnected during "
                 "read:\n%s\nhaving read: %zu bytes\n",
                 attempts, (int)sw.elapsed_ms(), a->to_string().c_str(),
                 a->data().length());
             fprintf(stderr,
-                "Note: current active/pending accepts: %" PRIu64
-                ", max_concurrent clients: %u, current clients: %zu and peak "
+                "Note: current active/pending accepts: %" PRIu32
+                ", max_concurrent clients: %" PRIu32
+                ", current clients: %zu and peak "
                 "clients: %zu\n",
-                this->m_naccepts, this->m_npeak_active_accepts,
+                this->m_nactive_accepts, this->m_npeak_active_accepts,
                 m_clients.size(), this->m_peak_clients);
+
+            m_nclients_disconnected_during_read++;
             return to_int(errors_t::NOT_CONN);
         }
         if (retval < 0) {
@@ -839,6 +879,7 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
     }; // while (found != std::string::npos)
     // how are we getting here?
     return -1;
+    /*/
 }
 
 auto ServerSocket::remove_client(
@@ -881,12 +922,12 @@ auto ServerSocket::remove_client(
     if (debug) {
         printf("\n\nCurrent number of connected clients: %d\n",
             (int)m_clients.size());
-        printf("Peak number of connected clients: %zd, at timestamp %" PRIu64
+        printf("Peak number of connected clients: %zd,"
                "\n",
-            this->peak_num_clients(), to_int(this->peaked_when()));
+            this->peak_num_clients());
         const auto ms_ago = xp::duration(
             xp::system_current_time_millis(), this->peaked_when());
-        printf("This was: %" PRIu64 " seconds ago\n",
+        printf("Peak of clients was: %" PRIu64 " seconds ago\n",
             to_int(ms_ago) / xp::ms_in_sec);
     }
     delete client_to_remove;
@@ -936,7 +977,7 @@ void unix_time(struct xp::xptimespec_t* spec) {
     spec->tv_nsec = wintime % exp7 * HUNDRED;
 }
 
-int xp::clock_gettime(int dummy, xptimespec_t* spec) {
+auto xp::clock_gettime(int dummy, xptimespec_t* spec) -> int {
     (void)dummy;
     static struct xptimespec_t startspec;
     static double ticks2nano = 0;

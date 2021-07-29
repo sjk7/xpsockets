@@ -71,34 +71,43 @@ inline auto system_current_time_millis() -> timepoint_t {
 #endif
 }
 
+inline bool operator>(const duration_t a, const duration_t b) {
+    return to_int(a) > to_int(b);
+}
+
 class stopwatch {
     public:
-    stopwatch(const char* id, bool silent = false)
+    stopwatch(const char* id, bool silent = false) noexcept
         : m_sid(id == nullptr ? "" : id)
         , m_start(system_current_time_millis())
         , m_end(system_current_time_millis())
         , m_silent(silent) {}
-    ~stopwatch() {
+    ~stopwatch() noexcept {
         m_end = xp::system_current_time_millis();
         show();
     }
-    void start(const char* newid = nullptr) {
+    void start(const char* newid = nullptr) noexcept {
         if (newid != nullptr) {
             m_sid = newid;
         }
 
         m_start = xp::system_current_time_millis();
     }
-    void stop() {
+    void stop() noexcept {
         m_end = xp::system_current_time_millis();
         show();
     }
-    void show() {
+    void show() noexcept {
         if (!m_silent) {
             printf("%s took%" PRIu64 "ms.\n", m_sid.c_str(),
                 to_int(duration(m_end, m_start)));
         }
         m_silent = true;
+    }
+
+    void restart() noexcept {
+        m_start = xp::system_current_time_millis();
+        m_end = m_start;
     }
 
     [[nodiscard]] auto elapsed() const noexcept -> duration_t {

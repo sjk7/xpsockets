@@ -231,10 +231,13 @@ template <typename CRTP> class SocketBase {
         auto sck = xp::to_native(m_fd);
         char* ptr = (char*)sv.data();
         xp::ioresult_t retval{};
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
 
         while (remain > 0) {
             const auto sz = remain > 512 ? 512 : remain;
-            int sent = ::send(sck, ptr, sz, 0);
+            int sent = ::send(sck, ptr, sz, MSG_NOSIGNAL);
             retval.bytes_transferred
                 += sent >= 0 ? static_cast<size_t>(sent) : 0;
             retval.return_value = sent;

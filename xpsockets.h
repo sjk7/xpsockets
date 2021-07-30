@@ -104,7 +104,8 @@ inline auto socket_error() {
     return WSAGetLastError();
 #else
     if (errno == 9) {
-        puts("quoi?");
+        // puts("quoi?");
+        // EBADF
     }
     return errno;
 #endif

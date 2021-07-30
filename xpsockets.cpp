@@ -226,7 +226,7 @@ template <typename CRTP> class SocketBase {
         return xp::duration(xp::system_current_time_millis(), m_ms_create);
     }
 
-    auto close(bool ignore_state = false) -> int {
+    auto close() -> int {
 
         assert(m_state == sockstate_t::none
             || m_state == sockstate_t::about_to_close); // why are we being
@@ -643,7 +643,7 @@ void SocketContext::on_idle(Sock* ptr) noexcept {
             }
         }
     } else {
-        if (!ptr->blocking()) {
+        if (ptr && !ptr->blocking()) {
             xp::sleep(1);
         }
     }
@@ -765,7 +765,9 @@ auto ServerSocket::do_accept(xp::endpoint_t& client_endpoint,
 // return < 0 to disconnect the client
 auto ServerSocket::on_after_accept_new_client(
     SocketContext* ctx, AcceptedSocket* a, bool debug_info) noexcept -> int {
-
+    (void)ctx;
+    (void)a;
+    (void)debug_info;
     return -1; // to signify client socket should go away now
 }
 
@@ -878,7 +880,48 @@ auto ServerSocket::listen() -> int {
     }
     // if this is set low, ab complains about: apr_socket_recv: Connection reset
     // by peer (104)
-    rc = ::listen(sock, SOMAXCONN);
+    int system_max_conn = SOMAXCONN;
+    if (SOMAXCONN > 0 && SOMAXCONN == 128) {
+#ifdef __APPLE__
+        FILE* fp = nullptr;
+        char path[1035];
+
+        /* Open the command for reading. */
+        fp = popen("sysctl -a | grep somaxconn", "r");
+        if (fp) {
+            while (fgets(path, sizeof(path), fp) != NULL) {
+                std::string_view sv(path);
+                const auto found = sv.find_last_of(':');
+                if (found != std::string::npos) {
+                    std::string_view sn = sv.data() + found + 2;
+                    std::string_view num = sn.substr(0, sv.size());
+                    path[strlen(path) - 1] = '\0';
+
+                    int n = std::stoi(num.data());
+                    if (n > 0) {
+                        system_max_conn = n;
+                    }
+                }
+            }
+            pclose(fp);
+        }
+#endif
+        if (system_max_conn <= 128 && system_max_conn > 0) {
+            fprintf(stderr,
+                "Warn: Some Oses have a low maximum of concurrent "
+                "connections,\n"
+                "and it looks like yours is one of them.\nYour server may be "
+                "easily flooded. Max = %d\n",
+                (int)system_max_conn);
+#ifdef __APPLE__
+            fprintf(stderr,
+                "Try this on Mac BigSur and above: sudo sysctl "
+                "kern.ipc.somaxconn=64000\n\n");
+#endif
+        }
+    }
+
+    rc = ::listen(sock, system_max_conn);
     if (rc < 0) {
         throw std::runtime_error(
             concat("Unable to listen on: ", to_string(pimpl->endpoint()),
@@ -910,15 +953,13 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
     size_t found = std::string::npos;
     const bool debug
         = (this->pimpl->context() != nullptr) && pimpl->context()->debug_info;
-    static constexpr int timeout_ms = 20'000;
+
     stopwatch sw("", !debug);
     if (debug) {
         const auto astr = a->to_string();
         sw.id_set(astr);
     }
 
-    auto attempts = 0;
-    bool warned = false;
     xp::msec_timeout_t t = xp::msec_timeout_t::default_timeout;
     xp::duration_t dur{30000};
     bool good = false;
@@ -930,7 +971,8 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
             = a->read2(t, a->data(), [&](auto& bytes_read, auto& mydata) {
                   assert(bytes_read); // should only return to us when data
                                       // ready, or fail with timeout
-
+                  (void)bytes_read;
+                  (void)mydata;
                   const auto found = a->data().find("\r\n\r\n");
                   if (found != std::string::npos) {
                       good = true;

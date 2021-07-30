@@ -65,6 +65,14 @@ inline auto system_current_time_millis() -> timepoint_t {
 #else
     struct timespec _t;
     int iret = clock_gettime(CLOCK_MONOTONIC, &_t);
+    static bool shown_error = false;
+    if (iret) {
+        if (!shown_error) {
+            fprintf(
+                stderr, "Unexpected fatal error from clock_gettime %d\n", iret);
+            shown_error = true;
+        }
+    }
     uint64_t retval = _t.tv_sec * 1000 + ::lround(_t.tv_nsec / 1.0e6);
     assert(iret == 0);
     return timepoint_t{retval};

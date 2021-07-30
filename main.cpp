@@ -39,6 +39,7 @@ int main() {
             cout << "Sending the following request: " << xp::simple_http_request
                  << endl;
             xp::ioresult_t send_result = consock.send(xp::simple_http_request);
+            (void)send_result;
             assert(send_result.bytes_transferred
                 == xp::simple_http_request.size());
             std::string data;
@@ -87,6 +88,7 @@ int main() {
             cout << "Sending the following request: " << xp::simple_http_request
                  << endl;
             auto send_result = consock.send(xp::simple_http_request);
+            (void)send_result;
             assert(send_result.bytes_transferred
                 == xp::simple_http_request.length());
             std::string data;

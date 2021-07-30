@@ -47,14 +47,16 @@ enum class errors_t : int32_t {
     NOT_CONN = WSAENOTCONN,
     IS_CONN = WSAEISCONN,
     WOULD_BLOCK = WSAEWOULDBLOCK,
-    CONN_ABORTED = WSAECONNABORTED
+    CONN_ABORTED = WSAECONNABORTED,
+    UNEXPECTED = -1000
 
 #else
     TIMED_OUT = ETIMEDOUT,
     NOT_CONN = ENOTCONN,
     IS_CONN = EISCONN,
     WOULD_BLOCK = EAGAIN,
-    CONN_ABORTED = ECONNABORTED
+    CONN_ABORTED = ECONNABORTED,
+    UNEXPECTED = -1000
 #endif
 
 };
@@ -109,6 +111,9 @@ inline auto socket_error() {
 }
 
 inline auto socket_error_string(int err = -1) -> std::string {
+    if (err == to_int(errors_t::UNEXPECTED)) {
+        return std::string("Unexpected error");
+    }
 #ifdef _WIN32
     if (err == -1) {
         err = WSAGetLastError();

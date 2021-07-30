@@ -52,14 +52,28 @@ enum class pollevents_t {
 
 static inline auto mypoll(const xp::native_socket_type fd,
     pollevents_t what_for = pollevents_t::poll_read,
-    xp::msec_timeout_t = xp::msec_timeout_t{1}) {
+    xp::msec_timeout_t t = xp::msec_timeout_t{1}) {
 
     short find_events = short(what_for);
     short found_events = 0;
     struct pollfd pollfd = {fd, find_events, found_events};
 
-    const auto n = poll(&pollfd, 1, 10);
+    const auto n = poll(&pollfd, 1, to_int(t));
+    if (n > 0) {
+        if (pollfd.revents | POLLIN) {
+            if (what_for == pollevents_t::poll_read) {
+                return n;
+            }
+        }
 
+        if (pollfd.revents | POLLOUT) {
+            if (what_for == pollevents_t::poll_write) {
+                return n;
+            }
+        }
+
+        assert(0); // got someting you were not expecting?
+    }
     return n;
 }
 
@@ -112,6 +126,20 @@ template <typename CRTP> class SocketBase {
                 throw std::runtime_error(xp::concat(
                     "Unable to init sockets library, returned error: ", i));
             }
+
+#define TARGET_RESOLUTION 1 // 1-millisecond target resolution
+
+            TIMECAPS tc;
+            UINT wTimerRes;
+
+            if (timeGetDevCaps(&tc, sizeof(TIMECAPS)) != TIMERR_NOERROR) {
+                fprintf(
+                    stderr, "Cannot set desired timer resolution: not fatal\n");
+            }
+
+            wTimerRes
+                = min(max(tc.wPeriodMin, TARGET_RESOLUTION), tc.wPeriodMax);
+            timeBeginPeriod(wTimerRes);
         }
 #endif
 
@@ -230,7 +258,13 @@ template <typename CRTP> class SocketBase {
         int remain = (int)sv.size();
         auto sck = xp::to_native(m_fd);
         char* ptr = (char*)sv.data();
-        xp::ioresult_t retval{};
+        xp::ioresult_t retval{0, 0};
+
+        const auto ready_ret = wait_for_ready(
+            this, pollevents_t::poll_write, "Waiting for client to send data");
+        if (ready_ret != to_int(xp::errors_t::NONE)) {
+            return retval;
+        }
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
@@ -279,7 +313,7 @@ template <typename CRTP> class SocketBase {
 
         int pollres = 0;
         while (pollres <= 0) {
-            pollres = mypoll(psock->native_handle());
+            pollres = mypoll(psock->native_handle(), events);
             if (pollres > 0) {
                 return to_int(xp::errors_t::NONE);
             }
@@ -576,6 +610,8 @@ void SocketContext::on_idle(Sock* ptr) noexcept {
     auto pa = dynamic_cast<AcceptedSocket*>(ptr);
 
     static auto constexpr max_concurrency = 100;
+    // I removed most sleeps if we are blocking, since the blocking itself
+    // "sleeps"
 
     if (pa != nullptr) {
         auto server = pa->server();
@@ -596,14 +632,20 @@ void SocketContext::on_idle(Sock* ptr) noexcept {
                              "::accept()ed****************\n\n");
                     }
                 } else {
-                    xp::sleep(1);
+                    if (!server->is_blocking()) {
+                        xp::sleep(1);
+                    }
                 }
             }
         } else {
-            xp::sleep(1);
+            if (!ptr->blocking()) {
+                xp::sleep(1);
+            }
         }
     } else {
-        xp::sleep(1);
+        if (!ptr->blocking()) {
+            xp::sleep(1);
+        }
     }
 }
 
@@ -764,7 +806,8 @@ auto ServerSocket::perform_internal_accept(
             remove_client(a,
                 concat("should_accept returned a value: ", should_accept)
                     .c_str());
-            retval = false;
+            retval = true; // we return whether or not we *accepted*, not
+                           // whether or not should_accept!
         }
     }
 
@@ -782,6 +825,8 @@ void SocketContext::run(ServerSocket* server) {
             if (ctx != nullptr) {
                 ctx->on_idle(server); // on_idle calls sleep if he can
             }
+        } else {
+            // accept succeeded, don't sleep
         }
     };
 }

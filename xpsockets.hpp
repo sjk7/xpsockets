@@ -61,7 +61,7 @@ class SocketContext {
     bool should_run{true};
 
 #if defined(_DEBUG) || !defined(NDEBUG)
-    bool debug_info{true};
+    bool debug_info{false};
 #else
     bool debug_info{false};
 #endif

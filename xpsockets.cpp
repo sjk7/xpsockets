@@ -54,19 +54,19 @@ static inline auto mypoll(const xp::native_socket_type fd,
     pollevents_t what_for = pollevents_t::poll_read,
     xp::msec_timeout_t t = xp::msec_timeout_t{1}) {
 
-    short find_events = short(what_for);
+    auto find_events = short(what_for);
     short found_events = 0;
     struct pollfd pollfd = {fd, find_events, found_events};
 
     const auto n = poll(&pollfd, 1, to_int(t));
     if (n > 0) {
-        if (pollfd.revents | POLLIN) {
+        if ((pollfd.revents & POLLIN) > 0) {
             if (what_for == pollevents_t::poll_read) {
                 return n;
             }
         }
 
-        if (pollfd.revents | POLLOUT) {
+        if ((pollfd.revents & POLLOUT) > 0) {
             if (what_for == pollevents_t::poll_write) {
                 return n;
             }
@@ -127,18 +127,20 @@ template <typename CRTP> class SocketBase {
                     "Unable to init sockets library, returned error: ", i));
             }
 
-#define TARGET_RESOLUTION 1 // 1-millisecond target resolution
+            static constexpr UINT TARGET_RESOLUTION
+                = 1; // 1-millisecond target resolution
 
             TIMECAPS tc;
             UINT wTimerRes;
 
             if (timeGetDevCaps(&tc, sizeof(TIMECAPS)) != TIMERR_NOERROR) {
-                fprintf(
-                    stderr, "Cannot set desired timer resolution: not fatal\n");
+                fprintf(stderr,
+                    "Cannot get timer resolution: not fatal, but "
+                    "unexpected.\n");
             }
 
-            wTimerRes
-                = min(max(tc.wPeriodMin, TARGET_RESOLUTION), tc.wPeriodMax);
+            wTimerRes = std::min(
+                std::max(tc.wPeriodMin, TARGET_RESOLUTION), tc.wPeriodMax);
             timeBeginPeriod(wTimerRes);
         }
 #endif
@@ -299,7 +301,7 @@ template <typename CRTP> class SocketBase {
         return retval;
     }
 
-    xp::native_socket_type native_handle() const noexcept {
+    [[nodiscard]] xp::native_socket_type native_handle() const noexcept {
         return static_cast<xp::native_socket_type>(m_fd);
     }
 
@@ -307,7 +309,9 @@ template <typename CRTP> class SocketBase {
     static inline int wait_for_ready(SOCKBASE* psock, const pollevents_t events,
         const char* why, xp::duration_t timeout = xp::duration_t{20000}) {
         assert(psock);
-        if (!psock->is_blocking()) return 0;
+        if (!psock->is_blocking()) {
+            return 0;
+        }
 
         stopwatch sw("ReadyTimer", true);
 
@@ -329,14 +333,14 @@ template <typename CRTP> class SocketBase {
                 auto e = errno;
                 if (e == EINTR) {
                     continue;
-                } else {
+                }
+                {
                     assert("Unknown return result from poll()" == nullptr);
                     return pollres;
                 }
-            } else if (pollres == 0) {
+            } else {
                 // nothing to read
                 psock->on_idle();
-            } else { // > 0
             }
         };
         return 0;
@@ -361,7 +365,7 @@ template <typename CRTP> class SocketBase {
         }
     }
 
-    ioresult_t handle_remote_closed(const ioresult_t io, const char* why) {
+    ioresult_t handle_remote_closed(const ioresult_t& io, const char* why) {
         assert(why);
         ioresult_t ret{io.bytes_transferred, to_int(xp::errors_t::NOT_CONN)};
         ret.return_value = m_last_error = to_int(xp::errors_t::NOT_CONN);
@@ -434,17 +438,17 @@ template <typename CRTP> class SocketBase {
                 return ret;
             }
 
-            if (read > 0) {
-                ret.return_value = 0;
-                // printf("Got data: %s\n", m_tmp.data());
-                const auto old_size = data.size();
-                data.resize(data.size() + static_cast<size_t>(read));
-                memcpy(data.data() + old_size, m_tmp.data(),
-                    static_cast<size_t>(read));
-                // printf("Got cumulative data: %s\n", data.c_str());
-                ret.bytes_transferred += static_cast<size_t>(read);
-                assert(ret.return_value != -1);
-            }
+            // if (read > 0) {
+            ret.return_value = 0;
+            // printf("Got data: %s\n", m_tmp.data());
+            const auto old_size = data.size();
+            data.resize(data.size() + static_cast<size_t>(read));
+            memcpy(data.data() + old_size, m_tmp.data(),
+                static_cast<size_t>(read));
+            // printf("Got cumulative data: %s\n", data.c_str());
+            ret.bytes_transferred += static_cast<size_t>(read);
+            assert(ret.return_value != -1);
+            //}
             if (read_callback != nullptr) {
                 const auto cbret = read_callback->new_data(
                     read, std::string_view{m_tmp.data(), size_t(read)});
@@ -617,33 +621,33 @@ void SocketContext::on_idle(Sock* ptr) noexcept {
         auto server = pa->server();
 
         if (server != nullptr) {
-            if (true) {
-                if (server->m_nactive_accepts >= max_concurrency) {
-                    // avoid stack overflow??
-                    xp::sleep(1);
-                    return;
-                }
 
-                if (server->perform_internal_accept(this, this->debug_info)) {
-                    if (this->debug_info) {
-                        puts("*****************on_idle caused another "
-                             "socket "
-                             "to be "
-                             "::accept()ed****************\n\n");
-                    }
-                } else {
-                    if (!server->is_blocking()) {
-                        xp::sleep(1);
-                    }
+            if (server->m_nactive_accepts >= max_concurrency) {
+                // avoid stack overflow??
+                xp::sleep(1);
+                return;
+            }
+
+            if (server->perform_internal_accept(this, this->debug_info)) {
+                if (this->debug_info) {
+                    puts("*****************on_idle caused another "
+                         "socket "
+                         "to be "
+                         "::accept()ed****************\n\n");
+                }
+            } else {
+                if (!server->is_blocking()) {
+                    xp::sleep(1);
                 }
             }
+
         } else {
             if (!ptr->blocking()) {
                 xp::sleep(1);
             }
         }
     } else {
-        if (ptr && !ptr->blocking()) {
+        if (ptr != nullptr && !ptr->blocking()) {
             xp::sleep(1);
         }
     }
@@ -695,11 +699,12 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
     struct sockaddr_in addr_in = {};
     const auto fd = xp::to_native(this->underlying_socket());
 
-    if (m_nactive_accepts > 100) {
-        xp::sleep(10); // anti-ddos
+    static constexpr auto ddos_threshold = 100;
+    if (m_nactive_accepts > ddos_threshold) {
+        xp::sleep(1); // anti-ddos
     }
 
-    xp::native_socket_type acc = to_int(xp::invalid_handle);
+    xp::native_socket_type acc;
     if (!this->is_blocking()) {
         xp::socklen_t addrlen = sizeof(addr_in);
         acc = ::accept(fd, (struct sockaddr*)&addr_in, &addrlen);
@@ -748,17 +753,21 @@ auto ServerSocket::do_accept(xp::endpoint_t& client_endpoint,
     if (s == xp::sock_handle_t::invalid) {
         return nullptr;
     }
-    {
+    try {
         auto a = new AcceptedSocket(s, client_endpoint,
             xp::concat(
                 "Server client, ", name(), " on ", to_string(client_endpoint)),
             this, pimpl->context());
         a->id_set(next_id());
         a->pimpl->id_set(a->id());
-        //#ifndef __APPLE__
-        //        a->blocking_set(false);
-        //#endif
+
         return a;
+    } catch (const std::exception& e) {
+        fprintf(stderr, "%s\n",
+            xp::concat("Could not create new client socket: ",
+                std::string_view(e.what()), "\n")
+                .c_str());
+        return nullptr;
     }
 }
 
@@ -878,10 +887,12 @@ auto ServerSocket::listen() -> int {
             concat("Unable to bind to: ", to_string(pimpl->endpoint()), " ",
                 xp::socket_error(), ": ", xp::socket_error_string()));
     }
+
+    static constexpr auto LOWMAXCONN = 128;
     // if this is set low, ab complains about: apr_socket_recv: Connection reset
     // by peer (104)
     int system_max_conn = SOMAXCONN;
-    if (SOMAXCONN > 0 && SOMAXCONN == 128) {
+    if (SOMAXCONN > 0 && SOMAXCONN <= LOWMAXCONN) {
 #ifdef __APPLE__
         FILE* fp = nullptr;
         char path[1035];
@@ -906,7 +917,7 @@ auto ServerSocket::listen() -> int {
             pclose(fp);
         }
 #endif
-        if (system_max_conn <= 128 && system_max_conn > 0) {
+        if (system_max_conn <= LOWMAXCONN && system_max_conn > 0) {
             fprintf(stderr,
                 "Warn: Some Oses have a low maximum of concurrent "
                 "connections,\n"
@@ -960,8 +971,8 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
         sw.id_set(astr);
     }
 
-    xp::msec_timeout_t t = xp::msec_timeout_t::default_timeout;
-    xp::duration_t dur{30000};
+    xp::duration_t dur{duration_t::default_timeout_duration};
+    xp::msec_timeout_t t{to_int(dur)};
     bool good = false;
     const auto hdr = std::string_view{xp::simple_http_response_no_cl};
 
@@ -1124,10 +1135,7 @@ auto ServerSocket::remove_client(
                 }
                 client->pimpl->shutdown(xp::shutdown_how::TX, why);
                 client->pimpl->close();
-
-                if (b) {
-                    client = nullptr;
-                }
+                client = nullptr;
             }
             return true;
         });

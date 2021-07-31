@@ -21,7 +21,7 @@ static constexpr auto TOO_MANY_CLIENTS = -1000;
 static constexpr auto MAX_CLIENTS = 100001;
 
 enum class timepoint_t : uint64_t {};
-enum class duration_t : uint64_t {};
+enum class duration_t : uint64_t { default_timeout_duration = 20000 };
 
 // no, we are not using chrono due to a) bloat and b) it's buggy in Windows if
 // the clock changes.

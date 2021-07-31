@@ -24,9 +24,15 @@
 #include <sys/select.h>
 #include <sys/ioctl.h>
 #else
+
+#define VC_EXTRALEAN
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <WinSock2.h>
 #include <Windows.h>
 #include <ws2tcpip.h>
+#include <mmsystem.h>
+#undef NOMINMAX
 
 #endif
 

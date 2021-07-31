@@ -83,7 +83,7 @@ class Sock {
     virtual ~Sock();
     [[nodiscard]] auto underlying_socket() const noexcept -> xp::sock_handle_t;
     auto send(std::string_view data) noexcept -> xp::ioresult_t;
-    bool blocking() const noexcept;
+    [[nodiscard]] bool blocking() const noexcept;
     bool blocking_set(bool should_blck);
 
     template <typename F>

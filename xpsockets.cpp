@@ -983,7 +983,7 @@ auto ServerSocket::listen() -> int {
 #endif
 
     rc = ::listen(sock,
-        actual_max); // not system_max_conn: on mac it polls forver
+        actual_max); // not system_max_conn: on mac it polls forever
     if (rc < 0) {
         throw std::runtime_error(
             concat("Unable to listen on: ", to_string(pimpl->endpoint()),

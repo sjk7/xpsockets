@@ -231,11 +231,16 @@ struct addrinfo_wrapper {
 };
 
 inline auto sock_close(sock_handle_t h) -> int {
+    int ret = 0;
+    // printf("Closing socket ... %d\n", to_int(h));
+    // stopwatch sw(concat("Closing socket ", to_int(h)).c_str());
 #ifdef _WIN32
-    return ::closesocket(static_cast<SOCKET>(h));
+
+    ret = ::closesocket(static_cast<SOCKET>(h));
 #else
-    return ::close(static_cast<int>(h));
+    ret = ::close(static_cast<int>(h));
 #endif
+    return ret;
 }
 
 inline auto sock_create(int dom = PF_INET, int ty = SOCK_STREAM, int proto = 0)

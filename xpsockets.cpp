@@ -60,19 +60,20 @@ static inline auto mypoll(const xp::native_socket_type fd,
 
     const auto n = poll(&pollfd, 1, to_int(t));
     if (n > 0) {
-        if ((pollfd.revents & POLLIN) > 0) {
+        if (pollfd.revents & POLLIN) {
             if (what_for == pollevents_t::poll_read) {
                 return n;
             }
         }
 
-        if ((pollfd.revents & POLLOUT) > 0) {
+        if (pollfd.revents & POLLOUT) {
             if (what_for == pollevents_t::poll_write) {
                 return n;
             }
         }
 
-        assert(0); // got someting you were not expecting?
+        return -1;
+        // assert(0); // got someting you were not expecting?
     }
     return n;
 }
@@ -146,6 +147,9 @@ template <typename CRTP> class SocketBase {
 #endif
 
         blocking_set(true);
+
+        // linger makes things very very slow in windows for lots of concurrent
+        /*/
         struct linger sl = {};
         xp::socklen_t optlen = sizeof(sl);
         int ffs = getsockopt(
@@ -158,7 +162,7 @@ template <typename CRTP> class SocketBase {
         ffs = setsockopt(
             to_native(m_fd), SOL_SOCKET, SO_LINGER, (const char*)&sl, optlen);
         assert(ffs == 0);
-
+        /*/
         m_ms_create = xp::system_current_time_millis();
     }
 
@@ -264,16 +268,20 @@ template <typename CRTP> class SocketBase {
 
         const auto ready_ret = wait_for_ready(
             this, pollevents_t::poll_write, "Waiting for client to send data");
+
         if (ready_ret != to_int(xp::errors_t::NONE)) {
             return retval;
         }
+
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
 
         while (remain > 0) {
             const auto sz = remain > 512 ? 512 : remain;
+            // puts("Blocking send\n");
             int sent = ::send(sck, ptr, sz, MSG_NOSIGNAL);
+            // puts("Blocking send complete\n");
             retval.bytes_transferred
                 += sent >= 0 ? static_cast<size_t>(sent) : 0;
             retval.return_value = sent;
@@ -297,6 +305,7 @@ template <typename CRTP> class SocketBase {
             remain -= sz;
         };
 
+        // printf("Sent: %s\n", sv.data());
         assert(retval.bytes_transferred == sv.size());
         return retval;
     }
@@ -316,6 +325,7 @@ template <typename CRTP> class SocketBase {
         stopwatch sw("ReadyTimer", true);
 
         int pollres = 0;
+
         while (pollres <= 0) {
             pollres = mypoll(psock->native_handle(), events);
             if (pollres > 0) {
@@ -334,14 +344,10 @@ template <typename CRTP> class SocketBase {
                 if (e == EINTR) {
                     continue;
                 }
-                {
-                    assert("Unknown return result from poll()" == nullptr);
-                    return pollres;
-                }
-            } else {
-                // nothing to read
-                psock->on_idle();
+                return pollres;
             }
+            // nothing to read
+            psock->on_idle();
         };
         return 0;
     }
@@ -371,6 +377,7 @@ template <typename CRTP> class SocketBase {
         ret.return_value = m_last_error = to_int(xp::errors_t::NOT_CONN);
         m_slast_error = concat(why, ' ', xp::socket_error_string(m_last_error));
         m_state = sockstate_t::about_to_close;
+        this->blocking_set(false);
         close();
         return ret;
     }
@@ -410,7 +417,7 @@ template <typename CRTP> class SocketBase {
     int handle_failed_read(const xp::timepoint_t time_start,
         const xp::msec_timeout_t timeout) noexcept {
         int ret = 0;
-        assert(!blocking_get());
+        assert(!is_blocking());
         m_last_error = last_error();
         ret = -m_last_error;
         const auto dur
@@ -419,7 +426,7 @@ template <typename CRTP> class SocketBase {
             m_last_error = to_int(xp::errors_t::TIMED_OUT);
             m_slast_error = "Timed out in read() waiting for data";
             ret = -to_int(xp::errors_t::TIMED_OUT);
-            assert(ret.return_value != -1);
+            assert(ret != -1);
             return ret;
         }
         if (m_last_error == to_int(xp::errors_t::WOULD_BLOCK)) {
@@ -429,7 +436,7 @@ template <typename CRTP> class SocketBase {
         }
         m_slast_error = xp::concat("unexpected return value of: ", m_last_error,
             socket_error_string(m_last_error));
-        assert(ret.return_value != -1);
+        assert(ret != -1);
         return ret;
     }
 
@@ -439,41 +446,43 @@ template <typename CRTP> class SocketBase {
         assert(this->m_fd != xp::invalid_handle);
         xp::ioresult_t ret{0, 0};
         sockstate_wrapper_t w(this->m_state, sockstate_t::in_recv);
+
         ret.return_value = prepare_read(timeout);
         if (ret.return_value != to_int(xp::errors_t::NONE)) {
+
             return ret;
         }
 
         const auto time_start = xp::system_current_time_millis();
         while (true) {
             assert(m_fd != xp::invalid_handle);
+
             int read = recv(xp::to_native(m_fd), m_tmp.data(), BUFSIZE, 0);
+
             if (read > 0) {
                 ret = handle_successful_read(read, data, m_tmp, read_callback);
-                // if no callback, don't loop, assume caller is taking care of
-                // it.
-                if (this->m_ctx)
-                    m_ctx->on_idle(crtp()); // do this even on success so event
-                                            // loop does not complain
-                if (ret.return_value || read_callback == nullptr)
+
+                // loop does not complain
+                if ((ret.return_value != 0) || (read_callback == nullptr)) {
                     return ret; // callback wants us to return.
+                }
             }
             if (read == 0) {
                 ret = handle_remote_closed(
                     ret, "Client closed socket during read()");
-                if (this->m_ctx)
-                    m_ctx->on_idle(crtp()); // do this even on success so event
-                                            // loop does not complain
+                // loop does not complain
                 return ret;
             }
 
             if (read < 0) {
                 ret.return_value = handle_failed_read(time_start, timeout);
                 if (xp::error_can_continue(ret.return_value)) {
-                    assert(!blocking_get());
+                    assert(!is_blocking());
                     continue;
                 }
-                if (ret.return_value < 0) return ret;
+                if (ret.return_value < 0) {
+                    return ret;
+                }
             }
         };
         return ret;
@@ -624,16 +633,19 @@ void SocketContext::on_idle(Sock* ptr) noexcept {
 
     assert(ptr);
     auto pa = dynamic_cast<AcceptedSocket*>(ptr);
-    static auto constexpr max_concurrency = 100;
+
     static auto last_time = xp::system_current_time_millis();
     static uint64_t longest_interval{0};
+    static constexpr uint64_t very_long_interval = 1000;
+    static constexpr auto busy_accept_attempts = 10;
 
     const auto this_interval
         = to_int(xp::system_current_time_millis()) - to_int(last_time);
     if (this_interval > longest_interval) {
         longest_interval = this_interval;
-        if (longest_interval > 50) {
-            if (pa && pa->server() && pa->server()->m_nactive_accepts < 10) {
+        if (longest_interval > very_long_interval) {
+            if (pa != nullptr && pa->server() != nullptr
+                && pa->server()->m_nactive_accepts < busy_accept_attempts) {
                 printf("Warn: long time between event loop being called: (%ld"
                        "ms). Try not to "
                        "block the thread\n",
@@ -647,7 +659,7 @@ void SocketContext::on_idle(Sock* ptr) noexcept {
         auto server = pa->server();
 
         if (server != nullptr) {
-
+            static auto constexpr max_concurrency = 100;
             if (server->m_nactive_accepts >= max_concurrency) {
                 // avoid stack overflow??
                 xp::sleep(1);
@@ -963,11 +975,15 @@ auto ServerSocket::listen() -> int {
             "kern.ipc.somaxconn=64000\n\n");
 #endif
     }
+    static constexpr int reasonable_max = 20000;
+    auto actual_max
+        = system_max_conn > reasonable_max ? reasonable_max : system_max_conn;
+#ifdef _WIN32
+    actual_max = SOMAXCONN;
+#endif
 
     rc = ::listen(sock,
-        system_max_conn > 20000
-            ? 20000
-            : system_max_conn); // not system_max_conn: on mac it polls forver
+        actual_max); // not system_max_conn: on mac it polls forver
     if (rc < 0) {
         throw std::runtime_error(
             concat("Unable to listen on: ", to_string(pimpl->endpoint()),
@@ -1168,9 +1184,13 @@ auto ServerSocket::remove_client(
                         client_to_remove->id());
                     printf("reason %s\n", why);
                 }
-                client->pimpl->shutdown(xp::shutdown_how::TX, why);
-                client->pimpl->close();
-                client = nullptr;
+                if (client->pimpl->is_valid()) {
+
+                    client->pimpl->blocking_set(false);
+                    client->pimpl->shutdown(xp::shutdown_how::TX, why);
+                    client->pimpl->close();
+                    client = nullptr;
+                }
             }
             return true;
         });

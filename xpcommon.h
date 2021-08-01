@@ -56,6 +56,7 @@ inline auto system_current_time_millis() -> timepoint_t {
 #if defined(_WIN32) || defined(_WIN64)
     struct xptimespec_t _t = {};
     const auto iret = clock_gettime(0, &_t);
+    (void)ret;
     assert(iret == 0);
     static constexpr auto THOUSAND = 1000;
     static constexpr auto MILLION = 1.0e6;

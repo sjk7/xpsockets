@@ -375,99 +375,110 @@ template <typename CRTP> class SocketBase {
         return ret;
     }
 
-    auto read(std::string& data, read_callback_t* read_callback,
-        xp::msec_timeout_t timeout) -> xp::ioresult_t {
+    static inline xp::ioresult_t handle_successful_read(int bytes_read,
+        std::string& data, const std::vector<char>& tmp,
+        read_callback_t* read_callback) {
+        xp::ioresult_t ret{};
+        ret.return_value = to_int(xp::errors_t::NONE);
+        data.append(tmp.data(), bytes_read);
+        ret.bytes_transferred += static_cast<size_t>(bytes_read);
 
-        xp::ioresult_t ret{0, 0};
-        sockstate_wrapper_t w(this->m_state, sockstate_t::in_recv);
+        if (read_callback != nullptr) {
+            const auto cbret = read_callback->new_data(
+                bytes_read, std::string_view{tmp.data(), size_t(bytes_read)});
+            if (cbret != 0) {
+                ret.return_value = cbret;
+                return ret;
+            }
+        }
+        return ret;
+    }
+
+    int prepare_read(const xp::msec_timeout_t timeout) {
         const auto poll_timeout
             = xp::duration_t{static_cast<xp::duration_t>(timeout)};
         const auto ready_ret = wait_for_ready(this, pollevents_t::poll_read,
             "Waiting for client to send data", poll_timeout);
         if (ready_ret != to_int(xp::errors_t::NONE)) {
-            return ret;
+            return ready_ret;
         }
 
         prepare_tmp_buffer();
-        auto sck = xp::to_native(m_fd);
+        return 0; // noerror
+    }
+
+    int handle_failed_read(const xp::timepoint_t time_start,
+        const xp::msec_timeout_t timeout) noexcept {
+        int ret = 0;
+        assert(!blocking_get());
+        m_last_error = last_error();
+        ret = -m_last_error;
+        const auto dur
+            = xp::duration(xp::system_current_time_millis(), time_start);
+        if (static_cast<int>(to_int(dur)) > to_int(timeout)) {
+            m_last_error = to_int(xp::errors_t::TIMED_OUT);
+            m_slast_error = "Timed out in read() waiting for data";
+            ret = -to_int(xp::errors_t::TIMED_OUT);
+            assert(ret.return_value != -1);
+            return ret;
+        }
+        if (m_last_error == to_int(xp::errors_t::WOULD_BLOCK)) {
+            this->m_ctx->on_idle(crtp());
+            ret = m_last_error;
+            return ret;
+        }
+        m_slast_error = xp::concat("unexpected return value of: ", m_last_error,
+            socket_error_string(m_last_error));
+        assert(ret.return_value != -1);
+        return ret;
+    }
+
+    auto read(std::string& data, read_callback_t* read_callback,
+        xp::msec_timeout_t timeout) -> xp::ioresult_t {
+
+        assert(this->m_fd != xp::invalid_handle);
+        xp::ioresult_t ret{0, 0};
+        sockstate_wrapper_t w(this->m_state, sockstate_t::in_recv);
+        ret.return_value = prepare_read(timeout);
+        if (ret.return_value != to_int(xp::errors_t::NONE)) {
+            return ret;
+        }
 
         const auto time_start = xp::system_current_time_millis();
-        assert(this->m_fd != xp::invalid_handle);
-        auto minus1err = 0;
-
         while (true) {
-            assert(this->m_fd != xp::invalid_handle);
-            int read = recv(sck, m_tmp.data(), BUFSIZE, 0);
-            // grab the errors straight away coz of concurrency
-            if (read < 0) {
-                minus1err = xp::socket_error();
-                assert(minus1err);
-                ret.return_value = minus1err;
+            assert(m_fd != xp::invalid_handle);
+            int read = recv(xp::to_native(m_fd), m_tmp.data(), BUFSIZE, 0);
+            if (read > 0) {
+                ret = handle_successful_read(read, data, m_tmp, read_callback);
+                // if no callback, don't loop, assume caller is taking care of
+                // it.
+                if (this->m_ctx)
+                    m_ctx->on_idle(crtp()); // do this even on success so event
+                                            // loop does not complain
+                if (ret.return_value || read_callback == nullptr)
+                    return ret; // callback wants us to return.
             }
             if (read == 0) {
                 ret = handle_remote_closed(
                     ret, "Client closed socket during read()");
+                if (this->m_ctx)
+                    m_ctx->on_idle(crtp()); // do this even on success so event
+                                            // loop does not complain
                 return ret;
             }
 
             if (read < 0) {
-                assert(minus1err);
-                m_last_error = minus1err;
-                const auto dur = xp::duration(
-                    xp::system_current_time_millis(), time_start);
-                if (static_cast<int>(to_int(dur)) > to_int(timeout)) {
-                    m_last_error = to_int(xp::errors_t::TIMED_OUT);
-                    m_slast_error = "Timed out in read() waiting for data";
-                    ret.return_value = to_int(xp::errors_t::TIMED_OUT);
-                    ret.bytes_transferred = 0;
-                    assert(ret.return_value != -1);
-                    return ret;
+                ret.return_value = handle_failed_read(time_start, timeout);
+                if (xp::error_can_continue(ret.return_value)) {
+                    assert(!blocking_get());
+                    continue;
                 }
-                if (m_last_error == to_int(xp::errors_t::WOULD_BLOCK)) {
-                    // m_slast_error = xp::socket_error_string();
-                    // ^^ save some cpu, we prolly don't need to do this as
-                    // failure is almost guaranteed: it's how sockets work!
-                    this->m_ctx->on_idle(crtp());
-                    ret.return_value = m_last_error;
-                    return ret;
-                }
-                m_slast_error
-                    = xp::concat("unexpected return value of: ", m_last_error,
-                        socket_error_string(m_last_error));
-                assert(ret.return_value != -1);
-                return ret;
-            }
-
-            // if (read > 0) {
-            ret.return_value = 0;
-            // printf("Got data: %s\n", m_tmp.data());
-            const auto old_size = data.size();
-            data.resize(data.size() + static_cast<size_t>(read));
-            memcpy(data.data() + old_size, m_tmp.data(),
-                static_cast<size_t>(read));
-            // printf("Got cumulative data: %s\n", data.c_str());
-            ret.bytes_transferred += static_cast<size_t>(read);
-            assert(ret.return_value != -1);
-            //}
-            if (read_callback != nullptr) {
-                const auto cbret = read_callback->new_data(
-                    read, std::string_view{m_tmp.data(), size_t(read)});
-                if (cbret != 0) {
-                    ret.return_value = cbret;
-                    return ret;
-                }
-            }
-
-            if (read_callback == nullptr) {
-                assert(ret.return_value != -1);
-                return ret; // no callback, don't loop, assume user is doing so
-                            // instead.
+                if (ret.return_value < 0) return ret;
             }
         };
-
-        assert(ret.return_value != -1);
         return ret;
     }
+
     [[nodiscard]] auto last_error_string() const noexcept
         -> const std::string& {
         return m_slast_error;
@@ -610,12 +621,27 @@ ConnectingSocket::~ConnectingSocket() {
 }
 
 void SocketContext::on_idle(Sock* ptr) noexcept {
+
     assert(ptr);
     auto pa = dynamic_cast<AcceptedSocket*>(ptr);
-
     static auto constexpr max_concurrency = 100;
-    // I removed most sleeps if we are blocking, since the blocking itself
-    // "sleeps"
+    static auto last_time = xp::system_current_time_millis();
+    static uint64_t longest_interval{0};
+
+    const auto this_interval
+        = to_int(xp::system_current_time_millis()) - to_int(last_time);
+    if (this_interval > longest_interval) {
+        longest_interval = this_interval;
+        if (longest_interval > 50) {
+            if (pa && pa->server() && pa->server()->m_nactive_accepts < 10) {
+                printf("Warn: long time between event loop being called: (%ld"
+                       "ms). Try not to "
+                       "block the thread\n",
+                    (long)this_interval);
+            }
+        }
+    }
+    last_time = xp::system_current_time_millis();
 
     if (pa != nullptr) {
         auto server = pa->server();
@@ -864,6 +890,34 @@ ServerSocket::ServerSocket(
     }
 }
 
+static inline int check_max_conn(int system_max_conn) {
+#ifdef __APPLE__
+    FILE* fp = nullptr;
+    char path[1035];
+
+    /* Open the command for reading. */
+    fp = popen("sysctl -a | grep somaxconn", "r");
+    if (fp) {
+        while (fgets(path, sizeof(path), fp) != NULL) {
+            std::string_view sv(path);
+            const auto found = sv.find_last_of(':');
+            if (found != std::string::npos) {
+                std::string_view sn = sv.data() + found + 2;
+                std::string_view num = sn.substr(0, sv.size());
+                path[strlen(path) - 1] = '\0';
+
+                int n = std::stoi(num.data());
+                if (n > 0) {
+                    return n;
+                }
+            }
+        }
+        pclose(fp);
+    }
+#endif
+    return system_max_conn;
+}
+
 auto ServerSocket::listen() -> int {
     int rc = 0;
     struct sockaddr_in serverSa = {};
@@ -893,46 +947,27 @@ auto ServerSocket::listen() -> int {
     // by peer (104)
     int system_max_conn = SOMAXCONN;
     if (SOMAXCONN > 0 && SOMAXCONN <= LOWMAXCONN) {
-#ifdef __APPLE__
-        FILE* fp = nullptr;
-        char path[1035];
-
-        /* Open the command for reading. */
-        fp = popen("sysctl -a | grep somaxconn", "r");
-        if (fp) {
-            while (fgets(path, sizeof(path), fp) != NULL) {
-                std::string_view sv(path);
-                const auto found = sv.find_last_of(':');
-                if (found != std::string::npos) {
-                    std::string_view sn = sv.data() + found + 2;
-                    std::string_view num = sn.substr(0, sv.size());
-                    path[strlen(path) - 1] = '\0';
-
-                    int n = std::stoi(num.data());
-                    if (n > 0) {
-                        system_max_conn = n;
-                    }
-                }
-            }
-            pclose(fp);
-        }
-#endif
-        if (system_max_conn <= LOWMAXCONN && system_max_conn > 0) {
-            fprintf(stderr,
-                "Warn: Some Oses have a low maximum of concurrent "
-                "connections,\n"
-                "and it looks like yours is one of them.\nYour server may be "
-                "easily flooded. Max = %d\n",
-                (int)system_max_conn);
-#ifdef __APPLE__
-            fprintf(stderr,
-                "Try this on Mac BigSur and above: sudo sysctl "
-                "kern.ipc.somaxconn=64000\n\n");
-#endif
-        }
+        system_max_conn = check_max_conn(system_max_conn);
     }
 
-    rc = ::listen(sock, system_max_conn);
+    if (system_max_conn <= LOWMAXCONN && system_max_conn > 0) {
+        fprintf(stderr,
+            "Warn: Some Oses have a low maximum of concurrent "
+            "connections,\n"
+            "and it looks like yours is one of them.\nYour server may be "
+            "easily flooded. Max = %d\n",
+            (int)system_max_conn);
+#ifdef __APPLE__
+        fprintf(stderr,
+            "Try this on Mac BigSur and above: sudo sysctl "
+            "kern.ipc.somaxconn=64000\n\n");
+#endif
+    }
+
+    rc = ::listen(sock,
+        system_max_conn > 20000
+            ? 20000
+            : system_max_conn); // not system_max_conn: on mac it polls forver
     if (rc < 0) {
         throw std::runtime_error(
             concat("Unable to listen on: ", to_string(pimpl->endpoint()),
@@ -979,7 +1014,7 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
     while (found == std::string::npos) {
 
         auto myread
-            = a->read2(t, a->data(), [&](auto& bytes_read, auto& mydata) {
+            = a->read_until(t, a->data(), [&](auto& bytes_read, auto& mydata) {
                   assert(bytes_read); // should only return to us when data
                                       // ready, or fail with timeout
                   (void)bytes_read;

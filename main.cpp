@@ -47,7 +47,7 @@ int main() {
             int my_result = 0;
 
             auto read_result
-                = consock.read2(xp::msec_timeout_t::default_timeout, data,
+                = consock.read_until(xp::msec_timeout_t::default_timeout, data,
                     [&](auto read_result, auto& d) {
                         if (read_result == 0) {
                             const auto f = (d.find("\r\n\r\n"));

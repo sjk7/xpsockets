@@ -87,7 +87,7 @@ class Sock {
     bool blocking_set(bool should_blck);
 
     template <typename F>
-    auto read2(xp::msec_timeout_t t, std::string& data, F&& f)
+    auto read_until(xp::msec_timeout_t t, std::string& data, F&& f)
         -> xp::ioresult_t {
         rcb_t rcb(std::forward<F>(f));
         return read(data, &rcb, t);

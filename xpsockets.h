@@ -76,7 +76,7 @@ inline auto error_can_continue(const errors_t e) {
 }
 
 inline auto error_can_continue(const int e) {
-    errors_t err{e};
+    errors_t err{abs(e)};
     return err == errors_t::WOULD_BLOCK;
 }
 

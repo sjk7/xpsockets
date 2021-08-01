@@ -1,6 +1,7 @@
 // This is an independent project of an individual developer. Dear PVS-Studio,
 // please check it. PVS-Studio Static Code Analyzer for C, C++, C#, and Java:
 // http://www.viva64.com
+#include "tests/test_badly_behaved_client.h"
 #include "xpsockets.hpp"
 #include <cassert>
 #include <iostream>
@@ -19,13 +20,16 @@ void test_server() {
 }
 
 int main() {
+    return test_badly_behaved_client();
+
     test_server();
     struct MySockContext : xp::SocketContext {
         mutable int ctr = 0;
-        virtual void on_idle(xp::Sock* /*sck*/) noexcept override {
+        virtual int on_idle(xp::Sock* /*sck*/) noexcept override {
             // cout << "on_idle called for sock: " << sck->name() << endl;
             xp::SocketContext::sleep(1);
             ctr++;
+            return 0;
         }
     };
 

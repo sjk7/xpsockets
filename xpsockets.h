@@ -210,14 +210,18 @@ struct addrinfo_wrapper {
     auto operator=(const addrinfo_wrapper& rhs) -> addrinfo_wrapper& = delete;
     addrinfo m_hints = {};
     addrinfo* m_paddr = nullptr;
-    int m_error;
+    int m_error{0};
     std::string m_serror;
     xp::endpoint_t m_ep{};
 
-    auto resolve() -> int {
+    int resolve() {
         m_hints.ai_family = PF_UNSPEC;
         m_hints.ai_socktype = SOCK_STREAM;
-        m_error = getaddrinfo(m_ep.address.data(), "http", &m_hints, &m_paddr);
+
+        // m_hints.sin_port = htons(PORT);
+        // htons(PORT);
+        m_error = getaddrinfo(m_ep.address.data(),
+            std::to_string(m_ep.port).c_str(), &m_hints, &m_paddr);
         if (m_error != 0) {
 #ifdef _WIN32
             m_serror = gai_strerrorA(m_error);
@@ -258,7 +262,7 @@ inline auto sock_connect(const xp::sock_handle_t sock, const xp::endpoint_t& ep,
     const xp::msec_timeout_t t = xp::msec_timeout_t::default_timeout) -> int {
     addrinfo_wrapper addr(ep);
 
-        int took = 0;
+    int took = 0;
     int ret = 0;
     while (took < to_int(t)) {
         ret = ::connect(to_native(sock), addr.m_paddr->ai_addr,
@@ -280,7 +284,7 @@ inline auto sock_connect(const xp::sock_handle_t sock, const xp::endpoint_t& ep,
     if (took >= to_int(t)) {
         ret = to_int(xp::errors_t::TIMED_OUT);
     } else {
-        printf("Connected to host in %d ms.\n", took);
+        // printf("Connected to host in %d ms.\n", took);
     }
     if (ret != 0) {
         perror("connect");

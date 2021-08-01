@@ -50,13 +50,6 @@ enum class pollevents_t {
     = POLLWRNORM // Normal data may be written without blocking.
 };
 
-template <typename T> std::string to_string(T* p) {
-    const auto ret = concat("fd: ", to_int(p->fd()), " id: ", p->id(),
-        " endpoint: ", xp::to_string(p->endpoint()),
-        " ms_alive: ", xp::to_int(p->ms_alive()));
-    return ret;
-}
-
 static inline auto mypoll(const xp::native_socket_type fd,
     pollevents_t what_for = pollevents_t::poll_read,
     xp::msec_timeout_t t = xp::msec_timeout_t{1}) {
@@ -371,7 +364,7 @@ template <typename CRTP> class SocketBase {
     static constexpr auto DEFAULT_BUFFER_SIZE = 8192;
     static constexpr auto BUFSIZE = DEFAULT_BUFFER_SIZE;
 
-    void on_idle() noexcept {
+    int on_idle() noexcept {
         assert(m_ctx);
         return this->m_ctx->on_idle(crtp());
     }
@@ -603,12 +596,24 @@ auto Sock::send(std::string_view data) noexcept -> xp::ioresult_t {
     return pimpl->send(data);
 }
 
-bool xp::Sock::blocking() const noexcept {
+bool xp::Sock::is_blocking() const noexcept {
     return pimpl->is_blocking();
 }
 
 bool xp::Sock::blocking_set(bool should_blck) {
     return pimpl->blocking_set(should_blck);
+}
+
+xp::sock_handle_t xp::Sock::fd() const noexcept {
+    return pimpl->fd();
+}
+
+uint64_t xp::Sock::id() const noexcept {
+    return pimpl->id();
+}
+
+void xp::Sock::id_set(uint64_t newid) noexcept {
+    pimpl->id_set(newid);
 }
 
 auto Sock::read(std::string& data, read_callback_t* read_callback,
@@ -650,7 +655,7 @@ ConnectingSocket::ConnectingSocket(std::string_view name,
     : Sock(name, connect_where, ctx) {
 
     blocking_set(false);
-    assert(!this->blocking());
+    assert(!this->is_blocking());
     auto conn = xp::sock_connect(this->pimpl->fd(), connect_where, timeout);
     if (conn != 0) {
         throw std::runtime_error(
@@ -660,10 +665,12 @@ ConnectingSocket::ConnectingSocket(std::string_view name,
 }
 
 ConnectingSocket::~ConnectingSocket() {
-    puts("Connecting socket destructor called");
+    if (pimpl->context() && pimpl->context()->debug_info) {
+        puts("Connecting socket destructor called");
+    }
 }
 
-void SocketContext::on_idle(Sock* ptr) noexcept {
+int SocketContext::on_idle(Sock* ptr) noexcept {
 
     assert(ptr);
     auto pa = dynamic_cast<AcceptedSocket*>(ptr);
@@ -699,7 +706,7 @@ void SocketContext::on_idle(Sock* ptr) noexcept {
             if (server->m_nactive_accepts >= max_concurrency) {
                 // avoid stack overflow??
                 xp::sleep(1);
-                return;
+                return 0;
             }
 
             if (server->perform_internal_accept(this, this->debug_info)) {
@@ -716,21 +723,24 @@ void SocketContext::on_idle(Sock* ptr) noexcept {
             }
 
         } else {
-            if (!ptr->blocking()) {
+            if (!ptr->is_blocking()) {
                 xp::sleep(1);
             }
         }
     } else {
-        if (ptr != nullptr && !ptr->blocking()) {
+        if (ptr != nullptr && !ptr->is_blocking()) {
             xp::sleep(1);
         }
     }
+
+    return 0;
 }
 
 void SocketContext::on_start(Sock* s) const noexcept {
 
     auto& ep = s->endpoint();
-    printf("Server running, listening on %s\n", to_string(ep).c_str());
+    std::cout << "Server running, listening on " << to_string(ep) << std::endl;
+    return;
 }
 
 void SocketContext::sleep(long ms) noexcept {
@@ -792,12 +802,18 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
 
         if (e == to_int(xp::errors_t::WOULD_BLOCK)
             || e == to_int(xp::errors_t::TIMED_OUT)
+            || e == to_int(xp::errors_t::NONE)
             || e == to_int(xp::errors_t::NONE)) {
             if (pimpl->context()) {
-                pimpl->on_idle();
+                if (pimpl->on_idle() < 0) {
+                    return xp::sock_handle_t::invalid;
+                }
             }
             return xp::sock_handle_t::invalid;
         }
+        assert("a non-accept should always lead to idle(), but somehow we "
+               "missed it"
+            == nullptr);
         {
             if (debug_info) {
                 fprintf(stderr, "Weird Accept error: %d:%s", xp::socket_error(),
@@ -859,12 +875,20 @@ auto ServerSocket::on_after_accept_new_client(
 }
 
 // return true if an accept took place
-auto ServerSocket::perform_internal_accept(
-    SocketContext* ctx, bool debug_info) noexcept -> bool {
-    bool retval = false;
+int ServerSocket::perform_internal_accept(
+    SocketContext* ctx, bool debug_info) noexcept {
+    int retval = false;
     assert(ctx);
     xp::endpoint_t client_endpoint{};
     AcceptedSocket* a = do_accept(client_endpoint, debug_info);
+    if (a == nullptr) {
+        if (this->pimpl->context()) {
+            const auto idl = this->pimpl->on_idle();
+            if (idl < 0) {
+                return idl;
+            }
+        }
+    }
 
     if (a != nullptr) {
         m_nactive_accepts++;
@@ -874,7 +898,7 @@ auto ServerSocket::perform_internal_accept(
         }
 
         m_naccepts++;
-        retval = true;
+        retval = 0;
         int should_accept = on_new_client(a);
         m_nactive_accepts--;
 
@@ -895,8 +919,7 @@ auto ServerSocket::perform_internal_accept(
             remove_client(a,
                 concat("should_accept returned a value: ", should_accept)
                     .c_str());
-            retval = true; // we return whether or not we *accepted*, not
-                           // whether or not should_accept!
+            return should_accept;
         }
     }
 
@@ -908,11 +931,21 @@ void SocketContext::run(ServerSocket* server) {
     // assert(!server->is_blocking());
     this->on_start(server);
 
-    while (this->should_run) {
-        server->perform_internal_accept(this, this->debug_info);
+    while (this->m_should_run) {
+        const auto rv = server->perform_internal_accept(this, this->debug_info);
+        if (rv < 0) {
+            printf(
+                "Server exiting because perform_internal_accept returned %d\n",
+                rv);
+            return;
+        }
         auto ctx = server->pimpl->context();
         if (ctx != nullptr) {
-            ctx->on_idle(server); // on_idle calls sleep if he can
+            if (ctx->on_idle(server) < 0) {
+                // on_idle calls sleep if he can
+                printf("When idle() returns < 0, server stops running\n");
+                this->m_should_run = false;
+            }
         }
     };
 }
@@ -1265,14 +1298,6 @@ AcceptedSocket::AcceptedSocket(xp::sock_handle_t s,
     const endpoint_t& remote_endpoint, std::string_view name,
     ServerSocket* pserver, SocketContext* ctx)
     : Sock(s, name, remote_endpoint, ctx), m_pserver(pserver) {}
-
-auto xp::AcceptedSocket::id() const noexcept -> uint64_t {
-    return pimpl->id();
-}
-
-void xp::AcceptedSocket::id_set(uint64_t newid) noexcept {
-    pimpl->id_set(newid);
-}
 
 #ifdef _WIN32
 

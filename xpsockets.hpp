@@ -54,14 +54,14 @@ class ServerSocket;
 
 class SocketContext {
     public:
-    virtual void on_idle(Sock* ptr) noexcept;
+    virtual int on_idle(Sock* ptr) noexcept;
     virtual void on_start(Sock* sck) const noexcept;
     static void sleep(long ms) noexcept;
     virtual void run(ServerSocket* server);
-    bool should_run{true};
+    bool m_should_run{true};
 
 #if defined(_DEBUG) || !defined(NDEBUG)
-    bool debug_info{true};
+    bool debug_info{false};
 #else
     bool debug_info{false};
 #endif
@@ -83,8 +83,11 @@ class Sock {
     virtual ~Sock();
     [[nodiscard]] auto underlying_socket() const noexcept -> xp::sock_handle_t;
     auto send(std::string_view data) noexcept -> xp::ioresult_t;
-    [[nodiscard]] bool blocking() const noexcept;
+    [[nodiscard]] bool is_blocking() const noexcept;
     bool blocking_set(bool should_blck);
+    xp::sock_handle_t fd() const noexcept;
+    [[nodiscard]] uint64_t id() const noexcept;
+    void id_set(uint64_t newid) noexcept;
 
     template <typename F>
     auto read_until(xp::msec_timeout_t t, std::string& data, F&& f)
@@ -129,8 +132,7 @@ class AcceptedSocket : public Sock {
         ServerSocket* server, SocketContext* ctx = nullptr);
     ~AcceptedSocket() override = default;
     auto server() noexcept -> ServerSocket* { return m_pserver; }
-    [[nodiscard]] auto id() const noexcept -> uint64_t;
-    void id_set(uint64_t newid) noexcept;
+    uint64_t id() const noexcept { return Sock::id(); }
 
     private:
     ServerSocket* m_pserver{nullptr};
@@ -182,8 +184,7 @@ class ServerSocket : public Sock {
     virtual auto on_after_accept_new_client(
         SocketContext* ctx, AcceptedSocket* a, bool debug_info) noexcept -> int;
     // return true if an accept took place
-    auto perform_internal_accept(SocketContext* ctx, bool debug_info) noexcept
-        -> bool;
+    int perform_internal_accept(SocketContext* ctx, bool debug_info) noexcept;
 
     private:
     std::vector<AcceptedSocket*> m_clients;

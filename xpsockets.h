@@ -258,7 +258,7 @@ inline auto sock_connect(const xp::sock_handle_t sock, const xp::endpoint_t& ep,
     const xp::msec_timeout_t t = xp::msec_timeout_t::default_timeout) -> int {
     addrinfo_wrapper addr(ep);
 
-    int took = 0;
+        int took = 0;
     int ret = 0;
     while (took < to_int(t)) {
         ret = ::connect(to_native(sock), addr.m_paddr->ai_addr,

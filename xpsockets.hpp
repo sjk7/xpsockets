@@ -61,7 +61,7 @@ class SocketContext {
     bool should_run{true};
 
 #if defined(_DEBUG) || !defined(NDEBUG)
-    bool debug_info{false};
+    bool debug_info{true};
 #else
     bool debug_info{false};
 #endif
@@ -131,7 +131,6 @@ class AcceptedSocket : public Sock {
     auto server() noexcept -> ServerSocket* { return m_pserver; }
     [[nodiscard]] auto id() const noexcept -> uint64_t;
     void id_set(uint64_t newid) noexcept;
-    [[nodiscard]] auto to_string() const noexcept -> std::string;
 
     private:
     ServerSocket* m_pserver{nullptr};

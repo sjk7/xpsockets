@@ -22,7 +22,7 @@ int main() {
     test_server();
     struct MySockContext : xp::SocketContext {
         mutable int ctr = 0;
-        virtual void on_idle(xp::Sock* /*sck*/) noexcept {
+        virtual void on_idle(xp::Sock* /*sck*/) noexcept override {
             // cout << "on_idle called for sock: " << sck->name() << endl;
             xp::SocketContext::sleep(1);
             ctr++;
@@ -49,22 +49,20 @@ int main() {
             auto read_result
                 = consock.read_until(xp::msec_timeout_t::default_timeout, data,
                     [&](auto read_result, auto& d) {
-                        if (read_result == 0) {
-                            const auto f = (d.find("\r\n\r\n"));
+                        if (read_result > 0) {
+                            const auto f = (data.find("\r\n\r\n"));
                             my_result = (int)f;
-                            return (int)f;
+                            return -(int)f;
                         }
                         return 0;
                     });
             cout << "Reading data from remote server took: " << myctx.ctr
                  << " ms." << endl;
             assert(!consock.is_valid()); // should be closed
-            assert(read_result.return_value == my_result);
-            std::string_view sv(data.data(), read_result.bytes_transferred);
+            assert(read_result.return_value == -my_result);
+            std::string_view sv(data.data(), data.size());
             cout << "Server responded, with header: \n" << sv << endl << endl;
             cout << endl;
-            assert(consock.last_error() == 0);
-            assert(consock.last_error_string().empty());
 
         } catch (const std::exception& e) {
             cerr << e.what() << endl << endl;
@@ -95,7 +93,7 @@ int main() {
             header_reader my_reader;
             auto read_result = consock.read(data, &my_reader);
             assert(read_result.bytes_transferred > 0);
-            std::string_view sv(data.data(), read_result.bytes_transferred);
+            std::string_view sv(data.data());
             cout << "Server responded, with header: \n" << sv << endl << endl;
             cout << endl;
 

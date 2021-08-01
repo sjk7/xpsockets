@@ -50,6 +50,13 @@ enum class pollevents_t {
     = POLLWRNORM // Normal data may be written without blocking.
 };
 
+template <typename T> std::string to_string(T* p) {
+    const auto ret = concat("fd: ", to_int(p->fd()), " id: ", p->id(),
+        " endpoint: ", xp::to_string(p->endpoint()),
+        " ms_alive: ", xp::to_int(p->ms_alive()));
+    return ret;
+}
+
 static inline auto mypoll(const xp::native_socket_type fd,
     pollevents_t what_for = pollevents_t::poll_read,
     xp::msec_timeout_t t = xp::msec_timeout_t{1}) {
@@ -70,6 +77,10 @@ static inline auto mypoll(const xp::native_socket_type fd,
             if (what_for == pollevents_t::poll_write) {
                 return n;
             }
+        }
+
+        if (pollfd.revents & POLLHUP) {
+            return -POLLHUP;
         }
 
         return -1;
@@ -248,7 +259,7 @@ template <typename CRTP> class SocketBase {
         } // I forgive u
         if (this->context()) {
             if (this->context()->debug_info) {
-                printf("called shutdown() on fd: %d , with id %" PRIu64
+                printf("called shutdown() on fd: %d , with id: %" PRIu64
                        "becoz %s\n",
                     static_cast<int>(m_fd), this->m_id, why);
             }
@@ -265,13 +276,7 @@ template <typename CRTP> class SocketBase {
         auto sck = xp::to_native(m_fd);
         char* ptr = (char*)sv.data();
         xp::ioresult_t retval{0, 0};
-
-        const auto ready_ret = wait_for_ready(
-            this, pollevents_t::poll_write, "Waiting for client to send data");
-
-        if (ready_ret != to_int(xp::errors_t::NONE)) {
-            return retval;
-        }
+        stopwatch sw("TXTimer", true);
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
@@ -279,7 +284,13 @@ template <typename CRTP> class SocketBase {
 
         while (remain > 0) {
             const auto sz = remain > 512 ? 512 : remain;
-            // puts("Blocking send\n");
+            const auto ready_ret = wait_for_ready(sw, this,
+                pollevents_t::poll_write, "Waiting for client to send data");
+
+            if (ready_ret != to_int(xp::errors_t::NONE)) {
+                return retval;
+            }
+
             int sent = ::send(sck, ptr, sz, MSG_NOSIGNAL);
             // puts("Blocking send complete\n");
             retval.bytes_transferred
@@ -315,14 +326,13 @@ template <typename CRTP> class SocketBase {
     }
 
     template <typename SOCKBASE>
-    static inline int wait_for_ready(SOCKBASE* psock, const pollevents_t events,
-        const char* why, xp::duration_t timeout = xp::duration_t{20000}) {
+    static inline int wait_for_ready(xp::stopwatch& sw, SOCKBASE* psock,
+        const pollevents_t events, const char* why,
+        xp::duration_t timeout = xp::duration_t{20000}) {
         assert(psock);
         if (!psock->is_blocking()) {
             return 0;
         }
-
-        stopwatch sw("ReadyTimer", true);
 
         int pollres = 0;
 
@@ -337,6 +347,11 @@ template <typename CRTP> class SocketBase {
                     = concat("Timed out in wait_for_ready: ", why, " after ",
                         to_int(timeout), " ms.");
                 return psock->m_last_error;
+            }
+            if (pollres & POLLHUP) {
+                psock->m_slast_error = "Remote client hung up";
+                psock->m_last_error = to_int(xp::errors_t::CONN_ABORTED);
+                return -POLLHUP;
             }
 
             if (pollres < 0) {
@@ -401,12 +416,24 @@ template <typename CRTP> class SocketBase {
         return ret;
     }
 
-    int prepare_read(const xp::msec_timeout_t timeout) {
+    int prepare_read(xp::stopwatch& sw, const xp::msec_timeout_t timeout) {
+
         const auto poll_timeout
             = xp::duration_t{static_cast<xp::duration_t>(timeout)};
-        const auto ready_ret = wait_for_ready(this, pollevents_t::poll_read,
+        const auto ready_ret = wait_for_ready(sw, this, pollevents_t::poll_read,
             "Waiting for client to send data", poll_timeout);
+
         if (ready_ret != to_int(xp::errors_t::NONE)) {
+            if (ready_ret < 0) {
+                if (ready_ret & POLLHUP) {
+                    m_state = sockstate_t::none;
+                    if (m_ctx && m_ctx->debug_info) {
+                        fprintf(stderr, "Client hung up: %s\n",
+                            to_string(this).c_str());
+                    }
+                    close();
+                }
+            }
             return ready_ret;
         }
 
@@ -418,7 +445,7 @@ template <typename CRTP> class SocketBase {
         const xp::msec_timeout_t timeout) noexcept {
         int ret = 0;
         assert(!is_blocking());
-        m_last_error = last_error();
+        m_last_error = xp::socket_error();
         ret = -m_last_error;
         const auto dur
             = xp::duration(xp::system_current_time_millis(), time_start);
@@ -445,24 +472,28 @@ template <typename CRTP> class SocketBase {
 
         assert(this->m_fd != xp::invalid_handle);
         xp::ioresult_t ret{0, 0};
+        stopwatch read_timer("RXTimer", true);
+
         sockstate_wrapper_t w(this->m_state, sockstate_t::in_recv);
-
-        ret.return_value = prepare_read(timeout);
-        if (ret.return_value != to_int(xp::errors_t::NONE)) {
-
-            return ret;
-        }
 
         const auto time_start = xp::system_current_time_millis();
         while (true) {
-            assert(m_fd != xp::invalid_handle);
+            assert(m_fd != xp::invalid_handle
+                && "Someone closed the socket during read()" != nullptr);
 
+            ret.return_value = prepare_read(read_timer, timeout);
+            if (ret.return_value != to_int(xp::errors_t::NONE)) {
+                return ret;
+            }
             int read = recv(xp::to_native(m_fd), m_tmp.data(), BUFSIZE, 0);
 
             if (read > 0) {
                 ret = handle_successful_read(read, data, m_tmp, read_callback);
-
-                // loop does not complain
+                if (ret.return_value < 0) {
+                    m_state = sockstate_t::about_to_close;
+                    close();
+                    return ret;
+                }
                 if ((ret.return_value != 0) || (read_callback == nullptr)) {
                     return ret; // callback wants us to return.
                 }
@@ -617,10 +648,13 @@ ConnectingSocket::ConnectingSocket(std::string_view name,
     const xp::endpoint_t& connect_where, xp::msec_timeout_t timeout,
     SocketContext* ctx)
     : Sock(name, connect_where, ctx) {
+
+    blocking_set(false);
+    assert(!this->blocking());
     auto conn = xp::sock_connect(this->pimpl->fd(), connect_where, timeout);
     if (conn != 0) {
         throw std::runtime_error(
-            xp::concat("Unable to connect to: ", to_string(connect_where),
+            xp::concat("Unable to connect to: ", xp::to_string(connect_where),
                 socket_error(), ":", socket_error_string()));
     }
 }
@@ -643,7 +677,9 @@ void SocketContext::on_idle(Sock* ptr) noexcept {
         = to_int(xp::system_current_time_millis()) - to_int(last_time);
     if (this_interval > longest_interval) {
         longest_interval = this_interval;
+        printf("Idle interval = %d ms.\n", (int)longest_interval);
         if (longest_interval > very_long_interval) {
+
             if (pa != nullptr && pa->server() != nullptr
                 && pa->server()->m_nactive_accepts < busy_accept_attempts) {
                 printf("Warn: long time between event loop being called: (%ld"
@@ -757,6 +793,9 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
         if (e == to_int(xp::errors_t::WOULD_BLOCK)
             || e == to_int(xp::errors_t::TIMED_OUT)
             || e == to_int(xp::errors_t::NONE)) {
+            if (pimpl->context()) {
+                pimpl->on_idle();
+            }
             return xp::sock_handle_t::invalid;
         }
         {
@@ -765,6 +804,7 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
                     xp::socket_error_string().c_str());
                 fprintf(stderr, "\n");
             }
+
             return xp::invalid_handle;
         }
     } else {
@@ -793,8 +833,8 @@ auto ServerSocket::do_accept(xp::endpoint_t& client_endpoint,
     }
     try {
         auto a = new AcceptedSocket(s, client_endpoint,
-            xp::concat(
-                "Server client, ", name(), " on ", to_string(client_endpoint)),
+            xp::concat("Server client, ", name(), " on ",
+                xp::to_string(client_endpoint)),
             this, pimpl->context());
         a->id_set(next_id());
         a->pimpl->id_set(a->id());
@@ -849,7 +889,7 @@ auto ServerSocket::perform_internal_accept(
             if (debug_info) {
                 printf("Server %s rejected client %s because should_accept "
                        "returned %d\n",
-                    this->name().data(), to_string(client_endpoint).data(),
+                    this->name().data(), xp::to_string(client_endpoint).data(),
                     should_accept);
             }
             remove_client(a,
@@ -869,13 +909,10 @@ void SocketContext::run(ServerSocket* server) {
     this->on_start(server);
 
     while (this->should_run) {
-        if (!server->perform_internal_accept(this, this->debug_info)) {
-            auto ctx = server->pimpl->context();
-            if (ctx != nullptr) {
-                ctx->on_idle(server); // on_idle calls sleep if he can
-            }
-        } else {
-            // accept succeeded, don't sleep
+        server->perform_internal_accept(this, this->debug_info);
+        auto ctx = server->pimpl->context();
+        if (ctx != nullptr) {
+            ctx->on_idle(server); // on_idle calls sleep if he can
         }
     };
 }
@@ -897,7 +934,7 @@ ServerSocket::ServerSocket(
     if (rc < 0) {
         throw std::runtime_error(
             concat("Server cannot set required socket properties:\n ",
-                to_string(listen_where), xp::socket_error(), ":",
+                xp::to_string(listen_where), xp::socket_error(), ":",
                 xp::socket_error_string()));
     }
 }
@@ -941,7 +978,7 @@ auto ServerSocket::listen() -> int {
         if (x != 1) {
             throw std::runtime_error(
                 concat("Unable to resolve server address: ",
-                    to_string(pimpl->endpoint()), xp::socket_error(), ":",
+                    xp::to_string(pimpl->endpoint()), xp::socket_error(), ":",
                     xp::socket_error_string()));
         }
     }
@@ -950,7 +987,7 @@ auto ServerSocket::listen() -> int {
     rc = ::bind(sock, (struct sockaddr*)&serverSa, sizeof(serverSa));
     if (rc < 0) {
         throw std::runtime_error(
-            concat("Unable to bind to: ", to_string(pimpl->endpoint()), " ",
+            concat("Unable to bind to: ", xp::to_string(pimpl->endpoint()), " ",
                 xp::socket_error(), ": ", xp::socket_error_string()));
     }
 
@@ -986,7 +1023,7 @@ auto ServerSocket::listen() -> int {
         actual_max); // not system_max_conn: on mac it polls forever
     if (rc < 0) {
         throw std::runtime_error(
-            concat("Unable to listen on: ", to_string(pimpl->endpoint()),
+            concat("Unable to listen on: ", xp::to_string(pimpl->endpoint()),
                 xp::socket_error(), ":", xp::socket_error_string()));
     }
 
@@ -1018,7 +1055,7 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
 
     stopwatch sw("", !debug);
     if (debug) {
-        const auto astr = a->to_string();
+        const auto astr = to_string(a->pimpl);
         sw.id_set(astr);
     }
 
@@ -1221,7 +1258,6 @@ auto ServerSocket::remove_client(
             printf("\n");
         }
     }
-
     return ret;
 }
 
@@ -1236,13 +1272,6 @@ auto xp::AcceptedSocket::id() const noexcept -> uint64_t {
 
 void xp::AcceptedSocket::id_set(uint64_t newid) noexcept {
     pimpl->id_set(newid);
-}
-
-auto xp::AcceptedSocket::to_string() const noexcept -> std::string {
-    const auto ret = concat("fd: ", to_int(this->underlying_socket()),
-        " id: ", this->id(), " endpoint: ", xp::to_string(this->endpoint()),
-        " ms_alive: ", xp::to_int(this->ms_alive()));
-    return ret;
 }
 
 #ifdef _WIN32

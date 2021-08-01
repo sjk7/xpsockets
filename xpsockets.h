@@ -258,6 +258,16 @@ inline auto sock_shutdown(native_socket_type s, shutdown_how how) -> int {
     return ::shutdown(s, myhow);
 }
 
+inline int get_error_on_socket_handle(const xp::sock_handle_t s) {
+    int ret = 0;
+    xp::socklen_t retlen = sizeof(ret);
+    auto x = ::getsockopt(
+        to_native(s), SOL_SOCKET, SO_ERROR, (char*)&ret, &retlen);
+    (void)x;
+    assert(x == 0);
+    return ret;
+}
+
 inline auto sock_connect(const xp::sock_handle_t sock, const xp::endpoint_t& ep,
     const xp::msec_timeout_t t = xp::msec_timeout_t::default_timeout) -> int {
     addrinfo_wrapper addr(ep);
@@ -267,11 +277,24 @@ inline auto sock_connect(const xp::sock_handle_t sock, const xp::endpoint_t& ep,
     while (took < to_int(t)) {
         ret = ::connect(to_native(sock), addr.m_paddr->ai_addr,
             (int)addr.m_paddr->ai_addrlen);
+
         if (ret == 0) {
             break;
         }
 
         const auto err = xp::socket_error();
+        // printf("Connect err: %d\n", err);
+        if (err == 22) {
+            // I see this if the server goes away
+            auto e = get_error_on_socket_handle(sock);
+            if (e) {
+                fprintf(stderr, "Connect error ON SOCKET: %s\n",
+                    xp::socket_error_string(err).c_str());
+            }
+            fprintf(stderr, "Connect error: %s\n",
+                xp::socket_error_string(err).c_str());
+            return err;
+        }
         if (err == EISCONN || err == to_int(xp::errors_t::IS_CONN)) {
             ret = 0;
             break;

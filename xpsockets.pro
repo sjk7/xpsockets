@@ -8,6 +8,7 @@ SOURCES += \
         xpsockets.cpp
 
 HEADERS += \
+    tests/test_badly_behaved_client.h \
     xpcommon.h \
     xpsockets.h \
     xpsockets.hpp

@@ -53,6 +53,7 @@ int main() {
             auto read_result
                 = consock.read_until(xp::msec_timeout_t::default_timeout, data,
                     [&](auto read_result, auto& d) {
+                        (void)d;
                         if (read_result > 0) {
                             const auto f = (data.find("\r\n\r\n"));
                             my_result = (int)f;
@@ -60,6 +61,7 @@ int main() {
                         }
                         return 0;
                     });
+            (void)read_result;
             cout << "Reading data from remote server took: " << myctx.ctr
                  << " ms." << endl;
             assert(!consock.is_valid()); // should be closed
@@ -96,6 +98,7 @@ int main() {
             std::string data;
             header_reader my_reader;
             auto read_result = consock.read(data, &my_reader);
+            (void)read_result;
             assert(read_result.bytes_transferred > 0);
             std::string_view sv(data.data());
             cout << "Server responded, with header: \n" << sv << endl << endl;

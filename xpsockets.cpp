@@ -660,7 +660,7 @@ ConnectingSocket::ConnectingSocket(std::string_view name,
     if (conn != 0) {
         throw std::runtime_error(
             xp::concat("Unable to connect to: ", xp::to_string(connect_where),
-                socket_error(), ":", socket_error_string()));
+                " ", socket_error(), ":", socket_error_string()));
     }
 }
 
@@ -928,7 +928,7 @@ int ServerSocket::perform_internal_accept(
 
 void SocketContext::run(ServerSocket* server) {
     assert(server);
-    // assert(!server->is_blocking());
+    this->m_should_run = true;
     this->on_start(server);
 
     while (this->m_should_run) {
@@ -1128,11 +1128,11 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
                     "****Did not send all body data: sent = %d, serr =%s\n",
                     sent.return_value, a->last_error_string().c_str());
             }
-            return -1;
+            return 0;
         }
         if (myread.return_value == 0) {
             this->m_nclients_disconnected_during_read++;
-            return -1;
+            return 0;
         }
         if (!xp::error_can_continue(myread.return_value)) {
             return myread.return_value;

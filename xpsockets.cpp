@@ -422,7 +422,7 @@ template <typename CRTP> class SocketBase {
                     m_state = sockstate_t::none;
                     if (m_ctx && m_ctx->debug_info) {
                         fprintf(stderr, "Client hung up: %s\n",
-                            to_string(this).c_str());
+                            to_string(this->crtp()).c_str());
                     }
                     close();
                 }
@@ -688,7 +688,8 @@ int SocketContext::on_idle(Sock* ptr) noexcept {
         if (longest_interval > very_long_interval) {
 
             if (pa != nullptr && pa->server() != nullptr
-                && pa->server()->m_nactive_accepts < busy_accept_attempts) {
+                && pa->server()->stats().nactive_accepts
+                    < busy_accept_attempts) {
                 printf("Warn: long time between event loop being called: (%ld"
                        "ms). Try not to "
                        "block the thread\n",
@@ -703,7 +704,7 @@ int SocketContext::on_idle(Sock* ptr) noexcept {
 
         if (server != nullptr) {
             static auto constexpr max_concurrency = 100;
-            if (server->m_nactive_accepts >= max_concurrency) {
+            if (server->stats().nactive_accepts >= max_concurrency) {
                 // avoid stack overflow??
                 xp::sleep(1);
                 return 0;
@@ -784,7 +785,7 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
     const auto fd = xp::to_native(this->underlying_socket());
 
     static constexpr auto ddos_threshold = 100;
-    if (m_nactive_accepts > ddos_threshold) {
+    if (m_stats.nactive_accepts > ddos_threshold) {
         xp::sleep(1); // anti-ddos
     }
 
@@ -891,16 +892,16 @@ int ServerSocket::perform_internal_accept(
     }
 
     if (a != nullptr) {
-        m_nactive_accepts++;
-        if (m_nactive_accepts > m_npeak_active_accepts) {
-            m_npeak_active_accepts = m_nactive_accepts;
+        m_stats.nactive_accepts++;
+        if (m_stats.nactive_accepts > m_stats.npeak_active_accepts) {
+            m_stats.npeak_active_accepts = m_stats.nactive_accepts;
             // printf("peak active accepts: %ld\n\n", m_npeak_active_accepts);
         }
 
-        m_naccepts++;
+        m_stats.naccepts++;
         retval = 0;
         int should_accept = on_new_client(a);
-        m_nactive_accepts--;
+        m_stats.nactive_accepts--;
 
         if (should_accept == 0) {
             const auto oaa = on_after_accept_new_client(ctx, a, debug_info);
@@ -1066,8 +1067,11 @@ auto ServerSocket::listen() -> int {
     }
     return 0;
 }
+SocketContext* ServerSocket::context() noexcept {
+    return pimpl->context();
+}
 
-auto ServerSocket::is_blocking() const noexcept -> bool {
+bool ServerSocket::is_blocking() const noexcept {
     return this->pimpl->is_blocking();
 }
 
@@ -1088,7 +1092,7 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
 
     stopwatch sw("", !debug);
     if (debug) {
-        const auto astr = to_string(a->pimpl);
+        const auto astr = to_string(a);
         sw.id_set(astr);
     }
 
@@ -1131,7 +1135,7 @@ auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
             return 0;
         }
         if (myread.return_value == 0) {
-            this->m_nclients_disconnected_during_read++;
+            m_stats.nclients_disconnected_during_read++;
             return 0;
         }
         if (!xp::error_can_continue(myread.return_value)) {
@@ -1276,9 +1280,9 @@ auto ServerSocket::remove_client(
             (int)m_clients.size());
         printf("Peak number of connected clients: %zd,"
                "\n",
-            this->peak_num_clients());
+            m_stats.peak_clients);
         const auto ms_ago = xp::duration(
-            xp::system_current_time_millis(), this->peaked_when());
+            xp::system_current_time_millis(), m_stats.peaked_when);
         printf("Peak of clients was: %" PRIu64 " seconds ago\n",
             to_int(ms_ago) / xp::ms_in_sec);
     }

@@ -180,12 +180,5 @@ template <typename... Args> inline auto concat(Args&&... args) -> std::string {
     return std::string(ss.str());
 }
 
-template <typename T> std::string to_string(T* p) {
-    const auto ret = concat("fd: ", to_int(p->fd()), " id: ", p->id(),
-        " endpoint: ", xp::to_string(p->endpoint()),
-        " ms_alive: ", xp::to_int(p->ms_alive()));
-    return ret;
-}
-
 } // namespace xp
 #endif // XPCOMMON_H

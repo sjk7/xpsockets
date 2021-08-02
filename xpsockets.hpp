@@ -59,6 +59,7 @@ class SocketContext {
     static void sleep(long ms) noexcept;
     virtual void run(ServerSocket* server);
     bool m_should_run{true};
+    bool should_run() const noexcept { return m_should_run; }
 
 #if defined(_DEBUG) || !defined(NDEBUG)
     bool debug_info{true};
@@ -66,6 +67,10 @@ class SocketContext {
     bool debug_info{false};
 #endif
 };
+
+static inline void sleep_ms(int ms) {
+    return SocketContext::sleep(ms);
+}
 
 class Sock {
     friend class SocketContext;
@@ -116,6 +121,50 @@ class Sock {
     [[nodiscard]] auto ms_alive() const noexcept -> xp::duration_t;
 };
 
+namespace has_insertion_operator_impl {
+    typedef char no;
+    typedef char yes[2];
+
+    struct any_t {
+        template <typename T> any_t(T const&);
+    };
+
+    no operator<<(std::ostream const&, any_t const&);
+
+    yes& test(std::ostream&);
+    no test(no);
+
+    template <typename T> struct has_insertion_operator {
+        static std::ostream& s;
+        static T const& t;
+        static bool const value = sizeof(test(s << t)) == sizeof(yes);
+    };
+} // namespace has_insertion_operator_impl
+
+template <typename T>
+struct has_insertion_operator
+    : has_insertion_operator_impl::has_insertion_operator<T> {};
+
+// NOTE: your type must implement operator << for this to work!
+template <typename T> inline std::string to_string(const T* p) {
+    static_assert(has_insertion_operator<T>::value,
+        "Your type needs ostream& << operator in order to use xp::to_string()");
+    return xp::concat(*p);
+}
+
+template <typename T> inline std::string to_string(const T& p) {
+    static_assert(has_insertion_operator<T>::value,
+        "Your type needs ostream& << operator in order to use xp::to_string()");
+    return xp::concat(p);
+}
+
+inline std::string to_string(Sock* p) {
+    const auto ret = concat("fd: ", to_int(p->fd()), " id: ", p->id(),
+        " endpoint: ", xp::to_string(p->endpoint()),
+        " ms_alive: ", xp::to_int(p->ms_alive()));
+    return ret;
+}
+
 class ConnectingSocket : public Sock {
     public:
     ConnectingSocket(std::string_view name, const xp::endpoint_t& connect_where,
@@ -124,7 +173,6 @@ class ConnectingSocket : public Sock {
     ~ConnectingSocket() override;
 };
 
-class ServerSocket;
 class AcceptedSocket : public Sock {
     public:
     AcceptedSocket(xp::sock_handle_t sock,
@@ -138,6 +186,15 @@ class AcceptedSocket : public Sock {
     ServerSocket* m_pserver{nullptr};
 };
 
+struct ServerStats {
+    size_t peak_clients;
+    xp::timepoint_t peaked_when;
+    uint64_t naccepts;
+    uint32_t nactive_accepts;
+    uint32_t npeak_active_accepts;
+    uint64_t nclients_disconnected_during_read;
+};
+
 class ServerSocket : public Sock {
     friend class SocketContext;
 
@@ -145,57 +202,63 @@ class ServerSocket : public Sock {
     ServerSocket(std::string_view name, const xp::endpoint_t& listen_where,
         SocketContext* ctx = nullptr);
     ~ServerSocket() override = default;
-    auto listen() -> int;
-    [[nodiscard]] auto is_blocking() const noexcept -> bool;
+    int listen();
+    bool is_blocking() const noexcept;
 
     // return < 0 to immediately disconnect the client, else just return 0
-    virtual auto on_new_client(AcceptedSocket* a) -> int;
+    virtual int on_new_client(AcceptedSocket* a);
 
-    auto next_id() noexcept -> uint32_t { return ++m_id_seed; }
-    auto do_accept(xp::endpoint_t& client_endpoint,
-        bool debug_info = false) noexcept -> AcceptedSocket*;
-    auto add_client(AcceptedSocket* client) -> bool {
+    auto next_id() noexcept { return ++m_id_seed; }
+    AcceptedSocket* do_accept(
+        xp::endpoint_t& client_endpoint, bool debug_info = false) noexcept;
+    bool add_client(AcceptedSocket* client) {
         if (m_clients.size() == max_clients()) {
             return false;
         }
         m_clients.push_back(client);
-        if (m_clients.size() > m_peak_clients) {
-            m_peak_clients = m_clients.size();
-            m_peaked_when = xp::system_current_time_millis();
+        if (m_clients.size() > m_stats.peak_clients) {
+            m_stats.peak_clients = m_clients.size();
+            m_stats.peaked_when = xp::system_current_time_millis();
         }
         return true;
     }
-    [[nodiscard]] virtual auto max_clients() const noexcept -> size_t {
-        return m_max_clients;
+
+    const std::vector<AcceptedSocket*>& clients() const noexcept {
+        return m_clients;
     }
-    [[nodiscard]] auto peaked_when() const noexcept -> xp::timepoint_t {
-        return m_peaked_when;
+    virtual size_t max_clients() const noexcept { return m_max_clients; }
+
+    SocketContext* context() noexcept;
+
+    SocketContext* context_const() const noexcept {
+        auto pthis = const_cast<ServerSocket*>(this);
+        return pthis->context();
     }
-    [[nodiscard]] auto peak_num_clients() const noexcept -> size_t {
-        return m_peak_clients;
+
+    bool is_listening() const noexcept {
+        if (context_const())
+            return context_const()->should_run();
+        else
+            return false;
     }
 
     protected:
-    auto accept(xp::endpoint_t& endpoint, bool debug_info) -> xp::sock_handle_t;
-    auto remove_client(AcceptedSocket* client_to_remove, const char* why)
-        -> bool;
+    xp::sock_handle_t accept(xp::endpoint_t& endpoint, bool debug_info);
+    bool remove_client(AcceptedSocket* client_to_remove, const char* why);
 
-    // return < 0 to disconnect the client
-    virtual auto on_after_accept_new_client(
-        SocketContext* ctx, AcceptedSocket* a, bool debug_info) noexcept -> int;
-    // return true if an accept took place
+    // return < 0 to disconnect the client, and NOT add him to the clients()
+    // collection
+    virtual int on_after_accept_new_client(
+        SocketContext* ctx, AcceptedSocket* a, bool debug_info) noexcept;
+    // return < 0 means quit listening
     int perform_internal_accept(SocketContext* ctx, bool debug_info) noexcept;
+    ServerStats stats() const noexcept { return m_stats; }
 
     private:
     std::vector<AcceptedSocket*> m_clients;
     uint32_t m_id_seed{0};
     size_t m_max_clients{xp::MAX_CLIENTS};
-    size_t m_peak_clients{0};
-    xp::timepoint_t m_peaked_when{0};
-    uint64_t m_naccepts{0};
-    uint32_t m_nactive_accepts{0};
-    uint32_t m_npeak_active_accepts{0};
-    uint64_t m_nclients_disconnected_during_read{0};
+    ServerStats m_stats{};
 };
 
 } // namespace xp

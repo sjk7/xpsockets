@@ -20,7 +20,10 @@ void test_server() {
 }
 
 int main() {
-    return test_badly_behaved_client();
+    while (1) {
+        test_badly_behaved_client();
+    }
+    return 0;
 
     test_server();
     struct MySockContext : xp::SocketContext {

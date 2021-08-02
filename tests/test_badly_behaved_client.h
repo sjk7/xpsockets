@@ -64,15 +64,25 @@ inline void badly_behaved_client() {
     client_thread_finished = true;
     return;
 }
+struct mystruct {
+    int test{1};
+    friend std::ostream& operator<<(std::ostream& os, const mystruct& s) {
+        os << s.test;
+    }
+};
 inline void server_thread() {
 
     simple_server serv;
     serv.listen();
+    mystruct s;
+    xp::to_string(s);
+    (void)s;
     std::thread bad_client_thread = std::thread{badly_behaved_client};
-    while (we_run) {
+    while (serv.is_listening()) {
         xp::SocketContext::sleep(1);
     }
     bad_client_thread.join();
+    assert(!serv.is_listening());
     return;
 }
 
@@ -91,22 +101,16 @@ inline int test_badly_behaved_client(int ctr = 2) {
         xp::SocketContext::sleep(500); // make sure server is up and running
 
         int i = 0;
+
         while (i++ < 10) {
-
             my_client c;
-
             auto sent = c.send(xp::simple_http_request);
             (void)sent;
             assert(sent.bytes_transferred == xp::simple_http_request.length());
             auto rx = c.read_until(
                 xp::msec_timeout_t{20000}, c.data(), [&](auto, auto) {
                     auto f = c.data().find("\r\n\r\n");
-                    // std::cout << "a: " << a << std::endl << "b: " << b <<
-                    // std::endl;
                     if (f != std::string::npos) {
-                        // std::cout << "Got reply from server: "
-                        //          << xp::to_string(c.endpoint()) << "\n\n"
-                        //          << c.data() << std::endl;
                         printf("Good reply #%d\r", i);
                         fflush(stdout);
                         return -1;
@@ -116,7 +120,8 @@ inline int test_badly_behaved_client(int ctr = 2) {
 
             assert(rx.return_value == -1);
             (void)rx;
-        }
+        }; // while()
+
         we_run = false;
         std::cout << std::endl;
         t.join();

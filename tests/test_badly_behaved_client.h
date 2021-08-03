@@ -8,38 +8,36 @@
 static inline std::atomic<bool> we_run{true};
 static inline std::atomic<bool> g_wait{true};
 static inline std::atomic<bool> client_thread_finished{true};
+static inline xp::port_type my_port = xp::port_type::testing_port;
 
 struct simple_server : xp::ServerSocket {
     simple_server()
-        : xp::ServerSocket("Dumb server", xp::endpoint_t{"0.0.0.0", 8080}) {
+        : xp::ServerSocket("Dumb server", xp::endpoint_t{"0.0.0.0", my_port}) {
         g_wait = false;
     }
     int on_idle() noexcept override {
-        if (g_wait) g_wait = false;
+        if (g_wait) {
+            g_wait = false;
+        }
         if (!we_run) {
             return -1;
         }
         return 0;
     }
-
-    virtual int on_new_client(xp::AcceptedSocket* a) override {
-        // std::cout << "Server accepted client: " << xp::to_string(a)
-        //          << std::endl;
-        return xp::ServerSocket::on_new_client(a);
-    }
-
     virtual ~simple_server() = default;
 };
 
 struct my_client : xp::ConnectingSocket {
     my_client()
-        : xp::ConnectingSocket("bad client", xp::endpoint_t{"127.0.0.1", 8080},
+        : xp::ConnectingSocket("bad client",
+            xp::endpoint_t{"127.0.0.1", my_port},
             xp::msec_timeout_t::ten_minutes) {}
     virtual ~my_client() = default;
 };
 
 inline void badly_behaved_client() {
     // so bad client connects, but never sends any data
+    // this tests that the server is capable of processing concurrent clients
     try {
         my_client c;
         while (we_run) {
@@ -66,9 +64,9 @@ inline void server_thread() {
 
     simple_server serv;
     serv.listen();
-    mystruct s;
+    const mystruct s;
     xp::to_string(s);
-    (void)s;
+    std::ignore = s;
     std::thread bad_client_thread = std::thread{badly_behaved_client};
 
     bad_client_thread.join();
@@ -91,18 +89,19 @@ inline int test_badly_behaved_client(int ctr = 2) {
 
         // even thou a bad_client has connected but sent no data, we should be
         // fine still:
-        xp::SocketContext::sleep(500); // make sure server is up and running
 
         int i = 0;
+        static constexpr auto ENOUGH_TO_DETECT_RACES = 10;
 
-        while (i++ < 10) {
+        while (i++ < ENOUGH_TO_DETECT_RACES) {
             my_client c;
-            auto sent = c.send(xp::simple_http_request);
-            (void)sent;
+            const auto sent = c.send(xp::simple_http_request);
+            std::ignore = sent;
             assert(sent.bytes_transferred == xp::simple_http_request.length());
-            auto rx = c.read_until(
-                xp::msec_timeout_t{20000}, c.data(), [&](auto, auto) {
-                    auto f = c.data().find("\r\n\r\n");
+            const auto tt = xp::msec_timeout_t{xp::msec_timeout_t::ten_seconds};
+            const auto rx = c.read_until(tt, c.data(),
+                [&](const auto& tmpdata, auto bytes_read) noexcept {
+                    const auto f = c.data().find("\r\n\r\n");
                     if (f != std::string::npos) {
                         printf("Good reply #%d\r", i);
                         fflush(stdout);
@@ -112,7 +111,7 @@ inline int test_badly_behaved_client(int ctr = 2) {
                 });
 
             assert(rx.return_value == -1);
-            (void)rx;
+            std::ignore = rx;
 
         }; // while()
         we_run = false;

@@ -26,7 +26,8 @@ using namespace std;
 using namespace xp;
 
 #ifdef _WIN32
-static inline auto poll(struct pollfd* fds, ULONG nfds, INT timeout_ms) -> int {
+static inline int poll(
+    struct pollfd* fds, ULONG nfds, INT timeout_ms) noexcept {
     int ret = 0;
     ret = ::WSAPoll(fds, nfds, timeout_ms);
     return ret;
@@ -52,10 +53,10 @@ enum class pollevents_t {
 
 static inline auto mypoll(const xp::native_socket_type fd,
     pollevents_t what_for = pollevents_t::poll_read,
-    xp::msec_timeout_t t = xp::msec_timeout_t{1}) {
+    xp::msec_timeout_t t = xp::msec_timeout_t{1}) noexcept {
 
-    auto find_events = short(what_for);
-    short found_events = 0;
+    auto find_events = static_cast<short>(what_for);
+    constexpr short found_events = 0;
     struct pollfd pollfd = {fd, find_events, found_events};
 
     const auto n = poll(&pollfd, 1, to_int(t));
@@ -82,14 +83,16 @@ static inline auto mypoll(const xp::native_socket_type fd,
     return n;
 }
 
-inline SocketContext& default_context_instance() {
+inline SocketContext& default_context_instance() noexcept {
     static SocketContext ctx;
     return ctx;
 }
 enum class sockstate_t { none, in_recv, in_send, about_to_close };
 
+static inline auto longest_alive = 0;
+
 struct sockstate_wrapper_t {
-    sockstate_wrapper_t(sockstate_t& state, sockstate_t this_state)
+    sockstate_wrapper_t(sockstate_t& state, sockstate_t this_state) noexcept
         : m_state(state) {
         m_state = this_state;
     }
@@ -101,7 +104,6 @@ struct sockstate_wrapper_t {
     sockstate_t& m_state;
 };
 
-static inline const uint64_t longest_alive{0};
 static inline std::string longest_alive_info;
 
 inline auto longest_alive_data() noexcept -> const auto& {
@@ -128,8 +130,8 @@ inline auto init_system() {
         static constexpr UINT TARGET_RESOLUTION
             = 1; // 1-millisecond target resolution
 
-        TIMECAPS tc;
-        UINT wTimerRes;
+        TIMECAPS tc = {};
+        UINT wTimerRes = 0;
 
         if (timeGetDevCaps(&tc, sizeof(TIMECAPS)) != TIMERR_NOERROR) {
             fprintf(stderr,
@@ -145,6 +147,8 @@ inline auto init_system() {
 }
 
 template <typename CRTP> class SocketBase {
+    friend class AcceptedSocket;
+    friend class ServerSocket;
 
     public:
     // constructor for server clients, or for any case
@@ -217,17 +221,16 @@ template <typename CRTP> class SocketBase {
         return xp::duration(xp::system_current_time_millis(), m_ms_create);
     }
 
-    auto close() -> int {
+    int close() noexcept {
 
         assert(m_state == sockstate_t::none
             || m_state == sockstate_t::about_to_close); // why are we being
                                                         // closed whilst active?
-        int ret = 0;
-        xp::sock_close(m_fd);
+        const int ret = xp::sock_close(m_fd);
         m_fd = xp::invalid_handle;
         return ret;
     }
-    auto shutdown(xp::shutdown_how how, const char* why) -> int {
+    int shutdown(xp::shutdown_how how, const char* why) noexcept {
         if (!is_valid()) {
             return 0;
         } // I forgive u
@@ -241,13 +244,13 @@ template <typename CRTP> class SocketBase {
 
         return xp::sock_shutdown(xp::to_native(m_fd), how);
     }
-    [[nodiscard]] auto fd() const { return m_fd; }
-    [[nodiscard]] auto name() const -> const std::string& { return m_name; }
+    [[nodiscard]] auto fd() const noexcept { return m_fd; }
+    [[nodiscard]] const auto& name() const noexcept { return m_name; }
 
     auto send(std::string_view& sv) -> xp::ioresult_t {
         sockstate_wrapper_t w(this->m_state, sockstate_t::in_send);
-        int remain = (int)sv.size();
-        auto sck = xp::to_native(m_fd);
+        int64_t remain{(int64_t)sv.size()};
+        const auto sck = xp::to_native(m_fd);
         char* ptr = (char*)sv.data();
         xp::ioresult_t retval{0, 0};
         stopwatch sw("TXTimer", true);
@@ -265,7 +268,7 @@ template <typename CRTP> class SocketBase {
                 return retval;
             }
 
-            int sent = ::send(sck, ptr, sz, MSG_NOSIGNAL);
+            auto sent = (int64_t)(::send(sck, ptr, (int)sz, MSG_NOSIGNAL));
             // puts("Blocking send complete\n");
             retval.bytes_transferred
                 += sent >= 0 ? static_cast<size_t>(sent) : 0;
@@ -291,7 +294,7 @@ template <typename CRTP> class SocketBase {
         };
 
         // printf("Sent: %s\n", sv.data());
-        assert(retval.bytes_transferred == sv.size());
+        // assert(retval.bytes_transferred == sv.size());
         return retval;
     }
 
@@ -329,7 +332,7 @@ template <typename CRTP> class SocketBase {
             }
 
             if (pollres < 0) {
-                auto e = errno;
+                const auto e = errno;
                 if (e == EINTR) {
                     continue;
                 }
@@ -423,7 +426,8 @@ template <typename CRTP> class SocketBase {
         ret = -m_last_error;
         const auto dur
             = xp::duration(xp::system_current_time_millis(), time_start);
-        if (static_cast<int>(to_int(dur)) > to_int(timeout)) {
+        const auto idur{(to_int(dur))};
+        if (idur > to_int(timeout)) {
             m_last_error = to_int(xp::errors_t::TIMED_OUT);
             m_slast_error = "Timed out in read() waiting for data";
             ret = -to_int(xp::errors_t::TIMED_OUT);
@@ -459,7 +463,8 @@ template <typename CRTP> class SocketBase {
             if (ret.return_value != to_int(xp::errors_t::NONE)) {
                 return ret;
             }
-            int read = recv(xp::to_native(m_fd), m_tmp.data(), BUFSIZE, 0);
+            const int read
+                = recv(xp::to_native(m_fd), m_tmp.data(), BUFSIZE, 0);
 
             if (read > 0) {
                 ret = handle_successful_read(read, data, m_tmp, read_callback);
@@ -521,7 +526,7 @@ template <typename CRTP> class SocketBase {
     string m_slast_error;
     int m_last_error = {0};
     CRTP* m_pcrtp{nullptr};
-    auto crtp() -> CRTP* { return m_pcrtp; }
+    auto crtp() noexcept { return m_pcrtp; }
     endpoint_t m_endpoint;
     bool m_blocking{false};
     std::string m_data;
@@ -555,17 +560,16 @@ class Sock::Impl : public SocketBase<Sock> {
 
 // Constructor connected with our Impl structure
 Sock::Sock(string_view name, const endpoint_t& ep, SocketContext* ctx)
-    : pimpl(new Impl(this, name, ep, ctx)) {
+    : pimpl(std::make_unique<Impl>(this, name, ep, ctx)) {
     assert(pimpl->fd() != xp::invalid_handle);
 }
 
 Sock::Sock(xp::sock_handle_t a, string_view name, const endpoint_t& ep,
     SocketContext* ctx)
-    : pimpl(new Impl(a, this, name, ep, ctx)) {
+    : pimpl(std::make_unique<Impl>(a, this, name, ep, ctx)) {
     assert(pimpl->fd() != xp::invalid_handle);
 }
 Sock::~Sock() {
-    delete pimpl;
     pimpl = nullptr;
 }
 
@@ -637,7 +641,8 @@ ConnectingSocket::ConnectingSocket(std::string_view name,
 
     blocking_set(false);
     assert(!this->is_blocking());
-    auto conn = xp::sock_connect(this->pimpl->fd(), connect_where, timeout);
+    const auto conn
+        = xp::sock_connect(this->pimpl->fd(), connect_where, timeout);
     if (conn != 0) {
         throw std::runtime_error(
             xp::concat("Unable to connect to: ", xp::to_string(connect_where),
@@ -704,20 +709,21 @@ int SocketContext::on_idle(Sock* ptr) noexcept {
                 }
             }
 
-            int ret = server->on_idle();
+            const int ret = server->on_idle();
             return ret;
-
-        } else {
-            if (!ptr->is_blocking()) {
-                xp::sleep(1);
-            }
         }
+        if (!ptr->is_blocking()) {
+            xp::sleep(1);
+        }
+
     } else {
         if (ptr != nullptr) {
-            ServerSocket* ss = dynamic_cast<ServerSocket*>(ptr);
+            auto ss = dynamic_cast<ServerSocket*>(ptr);
             if (ss) {
                 const auto idl = ss->on_idle();
-                if (idl < 0) return idl;
+                if (idl < 0) {
+                    return idl;
+                }
             }
             xp::sleep(1);
         }
@@ -747,16 +753,16 @@ static inline void get_client_endpoint(
     if (ntop_ret == nullptr) {
         throw std::runtime_error("ntop_ret failed. Bad address?");
     }
-    int client_port = ntohs(addr_in.sin_port);
+    const int client_port = ntohs(addr_in.sin_port);
     result.address = client_ip.data();
-    result.port = (uint32_t)client_port;
+    result.port = to_port(client_port);
     return;
 }
 
-static inline auto native_accept(xp::native_socket_type fd, sockaddr_in& addr)
-    -> xp::native_socket_type {
+static inline xp::native_socket_type native_accept(
+    xp::native_socket_type fd, sockaddr_in& addr) noexcept {
 
-    const auto empty_ret = to_native(xp::invalid_handle);
+    constexpr const auto empty_ret = to_native(xp::invalid_handle);
 
     const auto n = mypoll(fd);
     if (n >= 1) {
@@ -778,7 +784,7 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
         xp::sleep(1); // anti-ddos
     }
 
-    xp::native_socket_type acc;
+    xp::native_socket_type acc = to_native(xp::invalid_handle);
     if (!this->is_blocking()) {
         xp::socklen_t addrlen = sizeof(addr_in);
         acc = ::accept(fd, (struct sockaddr*)&addr_in, &addrlen);
@@ -792,7 +798,6 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
 
         if (e == to_int(xp::errors_t::WOULD_BLOCK)
             || e == to_int(xp::errors_t::TIMED_OUT)
-            || e == to_int(xp::errors_t::NONE)
             || e == to_int(xp::errors_t::NONE)) {
             if (pimpl->context()) {
                 if (pimpl->on_idle() < 0) {
@@ -830,21 +835,20 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
     return xp::sock_handle_t::invalid;
 }
 
-auto ServerSocket::do_accept(xp::endpoint_t& client_endpoint,
-    bool debug_info) noexcept -> AcceptedSocket* {
+std::unique_ptr<AcceptedSocket> ServerSocket::do_accept(
+    xp::endpoint_t& client_endpoint, bool debug_info) {
     xp::sock_handle_t s = accept(client_endpoint, debug_info);
 
     if (s == xp::sock_handle_t::invalid) {
         return nullptr;
     }
     try {
-        auto a = new AcceptedSocket(s, client_endpoint,
+        auto a = std::make_unique<AcceptedSocket>(s, client_endpoint,
             xp::concat("Server client, ", name(), " on ",
                 xp::to_string(client_endpoint)),
             this, pimpl->context());
         a->id_set(next_id());
         a->pimpl->id_set(a->id());
-
         return a;
     } catch (const std::exception& e) {
         fprintf(stderr, "%s\n",
@@ -858,20 +862,21 @@ auto ServerSocket::do_accept(xp::endpoint_t& client_endpoint,
 // return < 0 to disconnect the client
 auto ServerSocket::on_after_accept_new_client(
     SocketContext* ctx, AcceptedSocket* a, bool debug_info) noexcept -> int {
-    (void)ctx;
-    (void)a;
-    (void)debug_info;
+    std::ignore = ctx;
+    std::ignore = a;
+    std::ignore = debug_info;
     return -1; // to signify client socket should go away now
 }
 
 // return true if an accept took place
-int ServerSocket::perform_internal_accept(
+int64_t ServerSocket::perform_internal_accept(
     SocketContext* ctx, bool debug_info) noexcept {
     int retval = false;
     assert(ctx);
     xp::endpoint_t client_endpoint{};
-    AcceptedSocket* a = do_accept(client_endpoint, debug_info);
-    if (a == nullptr) {
+    std::unique_ptr<AcceptedSocket> acc
+        = do_accept(client_endpoint, debug_info);
+    if (acc) {
         if (this->pimpl->context()) {
             const auto idl = this->pimpl->on_idle();
             if (idl < 0) {
@@ -880,7 +885,7 @@ int ServerSocket::perform_internal_accept(
         }
     }
 
-    if (a != nullptr) {
+    if (acc) {
         m_stats.nactive_accepts++;
         if (m_stats.nactive_accepts > m_stats.npeak_active_accepts) {
             m_stats.npeak_active_accepts = m_stats.nactive_accepts;
@@ -889,34 +894,33 @@ int ServerSocket::perform_internal_accept(
 
         m_stats.naccepts++;
         retval = 0;
-        int should_accept = on_new_client(a);
+        auto should_accept = on_new_client(acc);
         m_stats.nactive_accepts--;
 
-        if (should_accept == 0) {
-            const auto oaa = on_after_accept_new_client(ctx, a, debug_info);
+        if (should_accept) {
+            const auto oaa
+                = on_after_accept_new_client(ctx, should_accept, debug_info);
             assert(oaa == -1);
             if (oaa < 0) {
-                remove_client(
-                    a, concat("on_after_accept returned: ", oaa).c_str());
+                remove_client(should_accept,
+                    concat("on_after_accept returned a valid pointer").c_str());
+                return 0;
             }
         } else {
             if (debug_info) {
                 printf("Server %s rejected client %s because should_accept "
-                       "returned %d\n",
-                    this->name().data(), xp::to_string(client_endpoint).data(),
-                    should_accept);
+                       "returned null\n",
+                    this->name().data(), xp::to_string(client_endpoint).data());
             }
-            remove_client(a,
-                concat("should_accept returned a value: ", should_accept)
-                    .c_str());
-            return should_accept;
+
+            return 0;
         }
     }
 
     return retval;
 }
 
-void SocketContext::run(ServerSocket* server) {
+void SocketContext::run(ServerSocket* server) noexcept {
     assert(server);
     this->m_should_run = true;
     this->on_start(server);
@@ -924,8 +928,8 @@ void SocketContext::run(ServerSocket* server) {
     while (this->m_should_run) {
         const auto rv = server->perform_internal_accept(this, this->debug_info);
         if (rv < 0) {
-            printf(
-                "Server exiting because perform_internal_accept returned %d\n",
+            printf("Server exiting because perform_internal_accept "
+                   "returned %" PRId64 "\n",
                 rv);
             m_should_run = false;
             return;
@@ -952,9 +956,9 @@ ServerSocket::ServerSocket(
     // on a single thread in macos (recv always returns E_WOULDBLOCK
     // for more than one concurrnet client)
     //#endif
-    int on = 1;
-    auto rc = ::setsockopt(to_native(this->underlying_socket()), SOL_SOCKET,
-        SO_REUSEADDR, (char*)&on, sizeof(on));
+    constexpr int on = 1;
+    const auto rc = ::setsockopt(to_native(this->underlying_socket()),
+        SOL_SOCKET, SO_REUSEADDR, (char*)&on, sizeof(on));
     if (rc < 0) {
         throw std::runtime_error(
             concat("Server cannot set required socket properties:\n ",
@@ -963,7 +967,7 @@ ServerSocket::ServerSocket(
     }
 }
 
-static inline int check_max_conn(int system_max_conn) {
+static inline int check_max_conn(int system_max_conn) noexcept {
 #ifdef __APPLE__
     FILE* fp = nullptr;
     char path[1035];
@@ -998,7 +1002,8 @@ auto ServerSocket::listen() -> int {
     serverSa.sin_addr.s_addr = htonl(INADDR_ANY);
     const auto& ep = this->pimpl->endpoint();
     if (ep.address.empty()) {
-        int x = inet_pton(AF_INET, ep.address.data(), &(serverSa.sin_addr));
+        const int x
+            = inet_pton(AF_INET, ep.address.data(), &(serverSa.sin_addr));
         if (x != 1) {
             throw std::runtime_error(
                 concat("Unable to resolve server address: ",
@@ -1006,7 +1011,7 @@ auto ServerSocket::listen() -> int {
                     xp::socket_error_string()));
         }
     }
-    serverSa.sin_port = htons(this->pimpl->endpoint().port);
+    serverSa.sin_port = htons((short)this->pimpl->endpoint().port);
     const auto sock = to_native(this->pimpl->fd());
     rc = ::bind(sock, (struct sockaddr*)&serverSa, sizeof(serverSa));
     if (rc < 0) {
@@ -1061,183 +1066,99 @@ SocketContext* ServerSocket::context() noexcept {
     return pimpl->context();
 }
 
-bool ServerSocket::is_blocking() const noexcept {
-    return this->pimpl->is_blocking();
-}
+// returns an AcceptedSOcket* that you DO NOT own
+AcceptedSocket* ServerSocket::on_new_client(
+    std::unique_ptr<AcceptedSocket>& accepted) {
 
-// return 0 on success
-auto ServerSocket::on_new_client(AcceptedSocket* a) -> int {
-    // m_clients.push_back(a);
-    if (!add_client(a)) {
+    if (!add_client(accepted)) {
         // too many clients!
         fprintf(stderr, "too many clients! The maximum is: %zu\n",
             this->max_clients());
-        return xp::TOO_MANY_CLIENTS;
+        this->pimpl->m_last_error = xp::TOO_MANY_CLIENTS;
+        this->pimpl->m_slast_error = "Too many clients";
     }
+    // adding a client to our vector clears a!
+    assert(!m_clients.empty());
+    auto retval = m_clients[m_clients.size() - 1];
     auto ctx = this->pimpl->context();
-    (void)ctx;
-    size_t found = std::string::npos;
+    std::ignore = ctx;
+    const size_t found = std::string::npos;
     const bool debug
         = (this->pimpl->context() != nullptr) && pimpl->context()->debug_info;
 
     stopwatch sw("", !debug);
     if (debug) {
-        const auto astr = to_string(a);
+        const auto astr = to_string(retval);
         sw.id_set(astr);
     }
 
-    xp::duration_t dur{duration_t::default_timeout_duration};
-    xp::msec_timeout_t t{to_int(dur)};
+    const xp::duration_t dur{duration_t::default_timeout_duration};
+    constexpr xp::msec_timeout_t t{to_int(dur)};
     bool good = false;
     const auto hdr = std::string_view{xp::simple_http_response_no_cl};
 
     while (found == std::string::npos) {
+        const auto myread = retval->read_until(
+            t, retval->data(), [&](auto& bytes_read, auto& mydata) noexcept {
+                assert(bytes_read); // should only return to us when data
+                                    // ready, or fail with timeout
+                std::ignore = bytes_read;
+                std::ignore = mydata;
+                const auto found = retval->data().find("\r\n\r\n");
+                if (found != std::string::npos) {
+                    good = true;
+                    return 1;
+                }
+                sw.restart();
 
-        auto myread
-            = a->read_until(t, a->data(), [&](auto& bytes_read, auto& mydata) {
-                  assert(bytes_read); // should only return to us when data
-                                      // ready, or fail with timeout
-                  (void)bytes_read;
-                  (void)mydata;
-                  const auto found = a->data().find("\r\n\r\n");
-                  if (found != std::string::npos) {
-                      good = true;
-                      return 1;
-                  }
-                  sw.restart();
-
-                  return 0;
-              });
+                return 0;
+            });
         if (good) {
-            auto sent = a->send(hdr);
+            auto sent = retval->send(hdr);
             if (sent.bytes_transferred != hdr.size()) {
                 fprintf(stderr,
-                    "****Did not send all header data: sent = %d, serr =%s\n",
-                    sent.return_value, a->last_error_string().c_str());
+                    "****Did not send all header data: sent = "
+                    "%" PRId64 " serr = %s\n ",
+                    sent.return_value, retval->last_error_string().c_str());
             }
 
-            sent = a->send(a->data());
-            if (sent.bytes_transferred != a->data().size()) {
+            sent = retval->send(retval->data());
+            if (sent.bytes_transferred != retval->data().size()) {
                 fprintf(stderr,
-                    "****Did not send all body data: sent = %d, serr =%s\n",
-                    sent.return_value, a->last_error_string().c_str());
+                    "****Did not send all body data: sent = %" PRId64
+                    " serr = %s\n ",
+                    sent.return_value, retval->last_error_string().c_str());
             }
-            return 0;
+            return nullptr;
         }
         if (myread.return_value == 0) {
             m_stats.nclients_disconnected_during_read++;
-            return 0;
+            return nullptr;
         }
         if (!xp::error_can_continue(myread.return_value)) {
-            return myread.return_value;
+            return nullptr;
         }
 
         if (sw.elapsed() > dur) {
-            return to_int(xp::errors_t::TIMED_OUT);
+            return nullptr;
         }
     }
-
-    assert(0); // dunno how we got here!
-    return to_int(xp::errors_t::UNEXPECTED);
-    /*/
-    while (found == std::string::npos) {
-
-        attempts++;
-        if (sw.elapsed_ms() >= timeout_ms) {
-            return to_int(xp::errors_t::TIMED_OUT);
-        }
-
-        auto retval = myread.return_value;
-        if (myread.bytes_transferred > 0) {
-            printf("have data: %s\n", a->data().c_str());
-            found = a->data().find("\r\n\r\n");
-            if (found == std::string::npos) {
-                found = a->data().find("\n\n");
-            }
-        }
-
-        // return this first if it happens,
-        // as you won't be able to do any more with this socket,
-        // even if you read what you wanted.
-        if (retval == 0) {
-
-            fprintf(stderr,
-                "After %d attempts (%d ms), client: remote disconnected during "
-                "read:\n%s\nhaving read: %zu bytes\n",
-                attempts, (int)sw.elapsed_ms(), a->to_string().c_str(),
-                a->data().length());
-            fprintf(stderr,
-                "Note: current active/pending accepts: %" PRIu32
-                ", max_concurrent clients: %" PRIu32
-                ", current clients: %zu and peak "
-                "clients: %zu\n",
-                this->m_nactive_accepts, this->m_npeak_active_accepts,
-                m_clients.size(), this->m_peak_clients);
-
-            m_nclients_disconnected_during_read++;
-            return to_int(errors_t::NOT_CONN);
-        }
-        if (retval < 0) {
-            // some other error:
-            retval = -retval;
-
-            if (retval == to_int(errors_t::WOULD_BLOCK)) {
-                continue;
-            }
-            if (retval == ETIMEDOUT || retval == to_int(xp::errors_t::TIMED_OUT)
-                || retval == to_int(xp::errors_t::CONN_ABORTED)
-                || retval == ECONNABORTED) {
-                // if (ctx->debug_info) {
-                fprintf(stderr,
-                    "Got an expected error code in on_new_client (from "
-                    "read) "
-                    "%d:%s\n",
-                    retval, xp::socket_error_string(retval).c_str());
-                //}
-
-                return -1; // make sure he's disconnected
-            }
-            fprintf(stderr,
-                "Unknown error code in on_new_client (from read) %d:%s\n",
-                retval, xp::socket_error_string(retval).c_str());
-            assert("checkme" == nullptr);
-            return retval;
-        }
-        static const uint64_t REASONABLE_TIME = 1000;
-        if (!warned) {
-            if (sw.elapsed_ms() > REASONABLE_TIME) {
-
-                warned = true;
-                fprintf(stderr, "Took ages for: %s\n", a->to_string().c_str());
-                fprintf(stderr, "When took ages, client buffer has:%s\n",
-                    a->data().c_str());
-            }
-        }
-        if (found != std::string::npos) {
-            if (warned) {
-                fprintf(stderr, "Slow client accepted, finally: %s\n",
-                    a->to_string().c_str());
-                fprintf(stderr, "\n");
-            }
-            return 0;
-        }
-    }; // while (found != std::string::npos)
-    // how are we getting here?
-    return -1;
-    /*/
+    return nullptr;
 }
 
-auto ServerSocket::remove_client(
-    AcceptedSocket* client_to_remove, const char* why) -> bool {
+bool xp::ServerSocket::remove_client(
+    AcceptedSocket* client_to_remove, const char* why) {
 
     const auto ctx = this->pimpl->context();
     bool debug = false;
     if (ctx != nullptr) {
         debug = ctx->debug_info;
     }
+
+    const AcceptedSocket* found_client = nullptr;
     auto it = std::remove_if(
         m_clients.begin(), m_clients.end(), [&](const AcceptedSocket* client) {
-            auto b = client_to_remove == client;
+            const auto b = client_to_remove == client;
             if (b) {
                 if (debug) {
 
@@ -1253,6 +1174,7 @@ auto ServerSocket::remove_client(
                     client->pimpl->blocking_set(false);
                     client->pimpl->shutdown(xp::shutdown_how::TX, why);
                     client->pimpl->close();
+                    found_client = client;
                     client = nullptr;
                 }
             }
@@ -1263,6 +1185,7 @@ auto ServerSocket::remove_client(
 
     if (it != m_clients.end()) {
         m_clients.erase(it);
+        delete found_client;
     }
 
     if (debug) {
@@ -1276,7 +1199,7 @@ auto ServerSocket::remove_client(
         printf("Peak of clients was: %" PRIu64 " seconds ago\n",
             to_int(ms_ago) / xp::ms_in_sec);
     }
-    delete client_to_remove;
+
     if (debug) {
 
         printf("Current number of clients: %zu\n", m_clients.size());
@@ -1299,7 +1222,7 @@ static auto constexpr exp7 = 10000000I64;
 static auto constexpr exp9 = 1000000000I64; // 1E+9
 static auto constexpr w2ux = 116444736000000000I64; // 1.jan1601 to 1.jan1970
 static auto constexpr HUNDRED = 100;
-void unix_time(struct xp::xptimespec_t* spec) {
+void unix_time(struct xp::xptimespec_t* spec) noexcept {
     __int64 wintime;
     GetSystemTimeAsFileTime((FILETIME*)&wintime);
     wintime -= w2ux;
@@ -1307,8 +1230,8 @@ void unix_time(struct xp::xptimespec_t* spec) {
     spec->tv_nsec = wintime % exp7 * HUNDRED;
 }
 
-auto xp::clock_gettime(int dummy, xptimespec_t* spec) -> int {
-    (void)dummy;
+int xp::clock_gettime(int dummy, xptimespec_t* spec) noexcept {
+    std::ignore = dummy;
     static struct xptimespec_t startspec;
     static double ticks2nano = 0;
     static __int64 startticks = 0;
@@ -1325,9 +1248,10 @@ auto xp::clock_gettime(int dummy, xptimespec_t* spec) -> int {
     QueryPerformanceCounter((LARGE_INTEGER*)&curticks);
     curticks -= startticks;
     spec->tv_sec = startspec.tv_sec + (curticks / tps);
-    spec->tv_nsec = static_cast<uint64_t>(
-        startspec.tv_nsec + (double)(curticks % tps) * ticks2nano);
 
+    const auto nsec{static_cast<uint64_t>(
+        startspec.tv_nsec + (double)(curticks % tps) * ticks2nano)};
+    spec->tv_nsec = nsec;
     if (!(spec->tv_nsec < exp9)) {
         spec->tv_sec++;
         spec->tv_nsec -= exp9;

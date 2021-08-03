@@ -15,6 +15,8 @@
 #include <string_view>
 #include <vector>
 #include <atomic>
+#include <array>
+#include <memory>
 
 namespace xp {
 inline constexpr std::string_view simple_http_request
@@ -35,30 +37,32 @@ inline constexpr std::string_view simple_http_response_no_cl
       "Connection: close\r\n"
       "Server: C++Test server\r\n\r\n";
 
+#ifndef PURE_VIRTUAL
+#define PURE_VIRTUAL 0
+#endif
+
 struct read_callback_t {
-    virtual auto new_data(int read_result, const std::string_view) noexcept
-        -> int
-        = 0;
+    virtual int64_t new_data(
+        int read_result, const std::string_view) noexcept = PURE_VIRTUAL;
 };
 
 template <typename F> struct rcb_t : read_callback_t {
     F&& m_f;
-    auto new_data(int read_result, const std::string_view data) noexcept
-        -> int override {
+    int64_t new_data(
+        int read_result, const std::string_view data) noexcept override {
         return m_f(read_result, data);
     }
-    rcb_t(F&& f) : m_f(std::forward<F>(f)) {}
+    rcb_t(F&& f) noexcept : m_f(std::forward<F>(f)) {}
 };
 
 class Sock;
 class ServerSocket;
-
 class SocketContext {
     public:
     virtual int on_idle(Sock* ptr) noexcept;
     virtual void on_start(Sock* sck) const noexcept;
     static void sleep(long ms) noexcept;
-    virtual void run(ServerSocket* server);
+    virtual void run(ServerSocket* server) noexcept;
     std::atomic<bool> m_should_run{true};
     bool should_run() const noexcept { return m_should_run; }
 
@@ -69,17 +73,24 @@ class SocketContext {
 #endif
 };
 
-inline void sleep_ms(int ms) {
+inline void sleep_ms(int ms) noexcept {
     return SocketContext::sleep(ms);
 }
 
-class Sock {
+struct no_copy {
+    no_copy() = default;
+    ~no_copy() = default;
+    no_copy(const no_copy&) = delete;
+    no_copy& operator=(const no_copy&) = delete;
+};
+
+class Sock : public no_copy {
     friend class SocketContext;
     friend class ServerSocket;
     class Impl;
 
     protected:
-    Impl* pimpl;
+    std::unique_ptr<Impl> pimpl;
 
     public:
     Sock(std::string_view name, const endpoint_t& ep,
@@ -124,7 +135,7 @@ class Sock {
 
 namespace has_insertion_operator_impl {
     typedef char no;
-    typedef char yes[2];
+    typedef std::array<char, 2> yes;
 
     struct any_t {
         template <typename T> any_t(T const&);
@@ -159,7 +170,8 @@ template <typename T> inline std::string to_string(const T& p) {
     return xp::concat(p);
 }
 
-inline std::string to_string(Sock* p) {
+inline std::string to_string(const Sock* p) {
+    assert(p);
     const auto ret = concat("fd: ", to_int(p->fd()), " id: ", p->id(),
         " endpoint: ", xp::to_string(p->endpoint()),
         " ms_alive: ", xp::to_int(p->ms_alive()));
@@ -181,7 +193,6 @@ class AcceptedSocket : public Sock {
         ServerSocket* server, SocketContext* ctx = nullptr);
     ~AcceptedSocket() override = default;
     auto server() noexcept -> ServerSocket* { return m_pserver; }
-    uint64_t id() const noexcept { return Sock::id(); }
 
     private:
     ServerSocket* m_pserver{nullptr};
@@ -204,19 +215,19 @@ class ServerSocket : public Sock {
         SocketContext* ctx = nullptr);
     ~ServerSocket() override = default;
     int listen();
-    bool is_blocking() const noexcept;
 
-    // return < 0 to immediately disconnect the client, else just return 0
-    virtual int on_new_client(AcceptedSocket* a);
+    // return a nullptr to immediately disconnect the client.
+    virtual AcceptedSocket* on_new_client(std::unique_ptr<AcceptedSocket>& a);
 
     auto next_id() noexcept { return ++m_id_seed; }
-    AcceptedSocket* do_accept(
-        xp::endpoint_t& client_endpoint, bool debug_info = false) noexcept;
-    bool add_client(AcceptedSocket* client) {
+    std::unique_ptr<AcceptedSocket> do_accept(
+        xp::endpoint_t& client_endpoint, bool debug_info = false);
+    bool add_client(std::unique_ptr<AcceptedSocket>& client) {
         if (m_clients.size() == max_clients()) {
             return false;
         }
-        m_clients.push_back(client);
+        m_clients.push_back(client.get());
+        client.release(); // vector owns it now
         if (m_clients.size() > m_stats.peak_clients) {
             m_stats.peak_clients = m_clients.size();
             m_stats.peaked_when = xp::system_current_time_millis();
@@ -237,10 +248,11 @@ class ServerSocket : public Sock {
     }
 
     bool is_listening() const noexcept {
-        if (context_const())
+        if (context_const()) {
             return context_const()->should_run();
-        else
-            return false;
+        }
+        // the default:
+        return false;
     }
 
     protected:
@@ -253,7 +265,8 @@ class ServerSocket : public Sock {
     virtual int on_after_accept_new_client(
         SocketContext* ctx, AcceptedSocket* a, bool debug_info) noexcept;
     // return < 0 means quit listening
-    int perform_internal_accept(SocketContext* ctx, bool debug_info) noexcept;
+    int64_t perform_internal_accept(
+        SocketContext* ctx, bool debug_info) noexcept;
     ServerStats stats() const noexcept { return m_stats; }
 
     private:

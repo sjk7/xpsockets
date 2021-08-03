@@ -39,7 +39,6 @@
 #ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "winmm.lib")
-
 #endif
 
 namespace xp {
@@ -67,21 +66,23 @@ enum class errors_t : int32_t {
 
 };
 
-inline auto to_int(const errors_t e) -> int32_t {
+inline constexpr auto to_int(const errors_t e) noexcept {
     return static_cast<int32_t>(e);
 }
 
-inline auto error_can_continue(const errors_t e) {
+inline constexpr auto error_can_continue(const errors_t e) noexcept {
     return e == errors_t::WOULD_BLOCK;
 }
 
-inline auto error_can_continue(const int e) {
-    errors_t err{abs(e)};
+inline auto error_can_continue(const int64_t e) noexcept {
+    int myint{(int)e};
+    myint = abs(myint);
+    const errors_t err{myint};
     return err == errors_t::WOULD_BLOCK;
 }
 
 #ifdef _WIN32
-inline auto init_sockets() -> int {
+inline int init_sockets() noexcept {
     int iResult = 0;
     WSADATA wsaData = {};
 
@@ -105,7 +106,7 @@ using socklen_t = int;
 using socklen_t = ::socklen_t;
 #endif
 
-inline auto socket_error() {
+inline auto socket_error() noexcept {
 #ifdef _WIN32
     return WSAGetLastError();
 #else
@@ -126,7 +127,7 @@ inline auto socket_error_string(int err = -1) -> std::string {
         err = WSAGetLastError();
     }
     char* s = nullptr;
-    size_t size = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER
+    const size_t size = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER
             | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
         nullptr, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPSTR)&s, 0,
         nullptr);
@@ -154,7 +155,7 @@ inline auto socket_error_string(int err = -1) -> std::string {
 inline auto to_string(const errors_t e) -> std::string {
     return socket_error_string(to_int(e));
 }
-inline void sleep(int ms) {
+inline void sleep(int ms) noexcept {
 #ifdef _WIN32
     ::Sleep(ms);
 #else
@@ -168,7 +169,7 @@ using native_socket_type = SOCKET;
 using native_socket_type = int;
 #endif
 
-auto to_native(const xp::sock_handle_t h) -> native_socket_type {
+auto constexpr to_native(const xp::sock_handle_t h) noexcept {
     return static_cast<native_socket_type>(h);
 }
 [[maybe_unused]] static inline constexpr auto invalid_handle
@@ -177,8 +178,8 @@ auto to_native(const xp::sock_handle_t h) -> native_socket_type {
 #include <fcntl.h>
 
 /** Returns true on success, or false if there was an error */
-auto sock_set_blocking(native_socket_type fd, bool blocking) -> bool {
-    if (static_cast<int>(fd) < 0) {
+inline bool sock_set_blocking(native_socket_type fd, bool blocking) noexcept {
+    if (native_socket_type{fd} < 0) {
         return false;
     }
 
@@ -221,7 +222,7 @@ struct addrinfo_wrapper {
         // m_hints.sin_port = htons(PORT);
         // htons(PORT);
         m_error = getaddrinfo(m_ep.address.data(),
-            std::to_string(m_ep.port).c_str(), &m_hints, &m_paddr);
+            xp::to_string(m_ep.port).c_str(), &m_hints, &m_paddr);
         if (m_error != 0) {
 #ifdef _WIN32
             m_serror = gai_strerrorA(m_error);
@@ -234,7 +235,7 @@ struct addrinfo_wrapper {
     }
 };
 
-inline auto sock_close(sock_handle_t h) -> int {
+inline int sock_close(sock_handle_t h) noexcept {
     int ret = 0;
     // printf("Closing socket ... %d\n", to_int(h));
     // stopwatch sw(concat("Closing socket ", to_int(h)).c_str());
@@ -247,23 +248,23 @@ inline auto sock_close(sock_handle_t h) -> int {
     return ret;
 }
 
-inline auto sock_create(int dom = PF_INET, int ty = SOCK_STREAM, int proto = 0)
-    -> sock_handle_t {
+inline sock_handle_t sock_create(
+    int dom = PF_INET, int ty = SOCK_STREAM, int proto = 0) noexcept {
     return sock_handle_t{::socket(dom, ty, proto)};
 }
 enum class shutdown_how { RX, TX, BOTH };
 
-inline auto sock_shutdown(native_socket_type s, shutdown_how how) -> int {
-    int myhow = static_cast<int>(how);
+inline int sock_shutdown(native_socket_type s, shutdown_how how) noexcept {
+    const int myhow = static_cast<int>(how);
     return ::shutdown(s, myhow);
 }
 
-inline int get_error_on_socket_handle(const xp::sock_handle_t s) {
+inline int get_error_on_socket_handle(const xp::sock_handle_t s) noexcept {
     int ret = 0;
     xp::socklen_t retlen = sizeof(ret);
-    auto x = ::getsockopt(
+    const auto x = ::getsockopt(
         to_native(s), SOL_SOCKET, SO_ERROR, (char*)&ret, &retlen);
-    (void)x;
+    std::ignore = x;
     assert(x == 0);
     return ret;
 }
@@ -284,9 +285,10 @@ inline auto sock_connect(const xp::sock_handle_t sock, const xp::endpoint_t& ep,
 
         const auto err = xp::socket_error();
         // printf("Connect err: %d\n", err);
-        if (err == 22) {
+        static constexpr const auto server_went_away = 22;
+        if (err == server_went_away) {
             // I see this if the server goes away
-            auto e = get_error_on_socket_handle(sock);
+            const auto e = get_error_on_socket_handle(sock);
             if (e) {
                 fprintf(stderr, "Connect error ON SOCKET: %s\n",
                     xp::socket_error_string(err).c_str());

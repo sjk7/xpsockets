@@ -12,6 +12,11 @@
 #include <cmath>
 #define __STDC_FORMAT_MACROS
 #include <cinttypes>
+#include <tuple> // std::ignore
+
+#ifdef _MSC_VER
+#pragma warning(disable : 26467)
+#endif
 
 namespace xp {
 
@@ -25,18 +30,18 @@ enum class duration_t : uint64_t { default_timeout_duration = 20000 };
 
 // no, we are not using chrono due to a) bloat and b) it's buggy in Windows if
 // the clock changes.
-inline auto to_int(timepoint_t t) -> uint64_t {
+inline constexpr uint64_t to_int(timepoint_t t) noexcept {
     return static_cast<uint64_t>(t);
 }
-inline auto to_int(const duration_t d) -> uint64_t {
+inline constexpr uint64_t to_int(const duration_t d) noexcept {
     return static_cast<uint64_t>(d);
 }
 
-inline auto from_int(uint64_t i) -> timepoint_t {
+inline constexpr timepoint_t from_int(uint64_t i) noexcept {
     return timepoint_t{i};
 }
 
-inline auto duration(const timepoint_t a, const timepoint_t b) -> duration_t {
+inline duration_t duration(const timepoint_t a, const timepoint_t b) noexcept {
     const auto mya = to_int(a);
     const auto myb = to_int(b);
     return duration_t{mya - myb};
@@ -48,15 +53,15 @@ struct xptimespec_t {
     uint64_t tv_nsec;
 };
 
-auto clock_gettime(int dummy, xptimespec_t* spec) -> int;
+int clock_gettime(int dummy, xptimespec_t* spec) noexcept;
 #endif
 
-inline auto system_current_time_millis() -> timepoint_t {
+inline timepoint_t system_current_time_millis() noexcept {
 
 #if defined(_WIN32) || defined(_WIN64)
     struct xptimespec_t _t = {};
     const auto iret = clock_gettime(0, &_t);
-    (void)iret;
+    std::ignore = iret;
     assert(iret == 0);
     static constexpr auto THOUSAND = 1000;
     static constexpr auto MILLION = 1.0e6;
@@ -80,13 +85,13 @@ inline auto system_current_time_millis() -> timepoint_t {
 #endif
 }
 
-inline bool operator>(const duration_t a, const duration_t b) {
+inline bool operator>(const duration_t a, const duration_t b) noexcept {
     return to_int(a) > to_int(b);
 }
 
 class stopwatch {
     public:
-    stopwatch(const char* id, bool silent = false) noexcept
+    stopwatch(const char* id, bool silent = false)
         : m_sid(id == nullptr ? "" : id)
         , m_start(system_current_time_millis())
         , m_end(system_current_time_millis())
@@ -95,7 +100,7 @@ class stopwatch {
         m_end = xp::system_current_time_millis();
         show();
     }
-    void start(const char* newid = nullptr) noexcept {
+    void start(const char* newid = nullptr) {
         if (newid != nullptr) {
             m_sid = newid;
         }
@@ -146,26 +151,57 @@ enum class sock_handle_t : int { invalid = -1 };
 #endif
 enum class msec_timeout_t : uint64_t {
     infinite = (uint64_t)-1,
-    default_timeout = 10000,
-    ten_minutes = 60 * 60 * 10
+    one_second = 1000UL,
+    five_seconds = one_second * 5UL,
+    ten_seconds = one_second * 10UL,
+    thirty_seconds = one_second * 30UL,
+    one_minute = one_second * 60UL,
+    two_minutes = one_minute * 2UL,
+    five_minutes = one_minute * 5,
+    ten_minutes = one_minute * 10,
+    default_timeout = ten_seconds
 };
 
-inline auto to_int(sock_handle_t s) -> int {
+inline constexpr int to_int(sock_handle_t s) noexcept {
     return static_cast<int>(s);
 }
-inline auto to_int(const msec_timeout_t t) -> int {
+inline constexpr int to_int(const msec_timeout_t t) noexcept {
     return static_cast<int>(t);
 }
+enum class port_type : uint32_t {
+    ftp = 21,
+    ssh = 22,
+    http = 50,
+    http_proxy = 8080,
+    testing_port = 4321
+};
+using port_int_type = typename std::underlying_type<port_type>::type;
 struct endpoint_t {
     std::string address;
-    uint32_t port;
+    port_type port;
 };
+inline std::string to_string(const port_type& p) {
+    return std::to_string(static_cast<uint32_t>(p));
+}
+
+inline port_int_type to_int(const port_type& port) noexcept {
+    return static_cast<uint32_t>(port);
+}
+
+inline constexpr port_type to_port(const uint32_t p) noexcept {
+    return port_type{p};
+}
+
+inline std::ostream& operator<<(std::ostream& os, const port_type& port) {
+    os << static_cast<uint32_t>(port);
+    return os;
+}
 
 struct ioresult_t {
     size_t bytes_transferred;
     // this is really a socket error, but I wanted to avoid user having to
     // #include<Winsock.h>
-    int32_t return_value;
+    int64_t return_value;
 };
 
 inline auto to_string(const endpoint_t& ep) -> std::string {
@@ -174,7 +210,7 @@ inline auto to_string(const endpoint_t& ep) -> std::string {
     return std::string(ss.str());
 }
 
-template <typename... Args> inline auto concat(Args&&... args) -> std::string {
+template <typename... Args> inline std::string concat(Args&&... args) {
     std::stringstream ss;
     (ss << ... << args);
     return std::string(ss.str());

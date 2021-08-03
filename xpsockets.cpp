@@ -89,7 +89,7 @@ inline SocketContext& default_context_instance() noexcept {
 }
 enum class sockstate_t { none, in_recv, in_send, about_to_close };
 
-static inline auto longest_alive = 0;
+static inline uint64_t longest_alive = 0;
 
 struct sockstate_wrapper_t {
     sockstate_wrapper_t(sockstate_t& state, sockstate_t this_state) noexcept
@@ -426,7 +426,7 @@ template <typename CRTP> class SocketBase {
         ret = -m_last_error;
         const auto dur
             = xp::duration(xp::system_current_time_millis(), time_start);
-        const auto idur{(to_int(dur))};
+        const int64_t idur{int64_t((to_int(dur)))};
         if (idur > to_int(timeout)) {
             m_last_error = to_int(xp::errors_t::TIMED_OUT);
             m_slast_error = "Timed out in read() waiting for data";

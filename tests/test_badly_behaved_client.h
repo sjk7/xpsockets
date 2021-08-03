@@ -101,6 +101,8 @@ inline int test_badly_behaved_client(int ctr = 2) {
             const auto tt = xp::msec_timeout_t{xp::msec_timeout_t::ten_seconds};
             const auto rx = c.read_until(tt, c.data(),
                 [&](const auto& tmpdata, auto bytes_read) noexcept {
+                    (void)tmpdata;
+                    (void)bytes_read;
                     const auto f = c.data().find("\r\n\r\n");
                     if (f != std::string::npos) {
                         printf("Good reply #%d\r", i);

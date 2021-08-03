@@ -82,7 +82,7 @@ static inline auto mypoll(const xp::native_socket_type fd,
     return n;
 }
 
-inline auto default_context_instance() -> SocketContext& {
+inline SocketContext& default_context_instance() {
     static SocketContext ctx;
     return ctx;
 }
@@ -107,9 +107,44 @@ static inline std::string longest_alive_info;
 inline auto longest_alive_data() noexcept -> const auto& {
     return longest_alive_info;
 }
+static inline bool socks_init = false;
+inline auto init_system() {
+#ifndef _WIN32
+    init_sockets();
+    signal(SIGPIPE, SIG_IGN);
+    if (!socks_init) {
+        setvbuf(stdout, NULL, _IOLBF, 0);
+        socks_init = true;
+    }
+#else
+    if (!socks_init) {
+        socks_init = true;
+        int i = xp::init_sockets();
+        if (i != 0) {
+            throw std::runtime_error(xp::concat(
+                "Unable to init sockets library, returned error: ", i));
+        }
+
+        static constexpr UINT TARGET_RESOLUTION
+            = 1; // 1-millisecond target resolution
+
+        TIMECAPS tc;
+        UINT wTimerRes;
+
+        if (timeGetDevCaps(&tc, sizeof(TIMECAPS)) != TIMERR_NOERROR) {
+            fprintf(stderr,
+                "Cannot get timer resolution: not fatal, but "
+                "unexpected.\n");
+        }
+
+        wTimerRes = std::min(
+            std::max(tc.wPeriodMin, TARGET_RESOLUTION), tc.wPeriodMax);
+        timeBeginPeriod(wTimerRes);
+    }
+#endif
+}
 
 template <typename CRTP> class SocketBase {
-    static inline bool socks_init = false;
 
     public:
     // constructor for server clients, or for any case
@@ -121,52 +156,9 @@ template <typename CRTP> class SocketBase {
         , m_ctx(ctx)
         , m_pcrtp(sck)
         , m_endpoint(std::move(endpoint)) {
-#ifndef _WIN32
-        signal(SIGPIPE, SIG_IGN);
-#else
-        if (!socks_init) {
-            socks_init = true;
-            int i = xp::init_sockets();
-            if (i != 0) {
-                throw std::runtime_error(xp::concat(
-                    "Unable to init sockets library, returned error: ", i));
-            }
 
-            static constexpr UINT TARGET_RESOLUTION
-                = 1; // 1-millisecond target resolution
-
-            TIMECAPS tc;
-            UINT wTimerRes;
-
-            if (timeGetDevCaps(&tc, sizeof(TIMECAPS)) != TIMERR_NOERROR) {
-                fprintf(stderr,
-                    "Cannot get timer resolution: not fatal, but "
-                    "unexpected.\n");
-            }
-
-            wTimerRes = std::min(
-                std::max(tc.wPeriodMin, TARGET_RESOLUTION), tc.wPeriodMax);
-            timeBeginPeriod(wTimerRes);
-        }
-#endif
-
+        init_system();
         blocking_set(true);
-
-        // linger makes things very very slow in windows for lots of concurrent
-        /*/
-        struct linger sl = {};
-        xp::socklen_t optlen = sizeof(sl);
-        int ffs = getsockopt(
-            to_native(this->m_fd), SOL_SOCKET, SO_LINGER, (char*)&sl, &optlen);
-        assert(
-            sl.l_linger == 0 && sl.l_onoff == 0); // at least the case in 'doze
-        sl.l_onoff = 1;
-        sl.l_linger = 1;
-
-        ffs = setsockopt(
-            to_native(m_fd), SOL_SOCKET, SO_LINGER, (const char*)&sl, optlen);
-        assert(ffs == 0);
-        /*/
         m_ms_create = xp::system_current_time_millis();
     }
 
@@ -179,18 +171,7 @@ template <typename CRTP> class SocketBase {
         if (m_ctx == nullptr) {
             m_ctx = &default_context_instance();
         }
-#ifndef _WIN32
-        signal(SIGPIPE, SIG_IGN);
-#else
-        if (!socks_init) {
-            socks_init = true;
-            int i = xp::init_sockets();
-            if (i != 0) {
-                throw std::runtime_error(xp::concat(
-                    "Unable to init sockets library, returned error: ", i));
-            }
-        }
-#endif
+        init_system();
         m_fd = xp::sock_create();
         if (m_fd == xp::invalid_handle) {
             throw std::runtime_error("No system resources to create socket");
@@ -227,7 +208,7 @@ template <typename CRTP> class SocketBase {
         return bl;
     }
 
-    [[nodiscard]] auto id() const noexcept -> uint64_t { return m_id; }
+    uint64_t id() const noexcept { return m_id; }
     void id_set(uint64_t newid) noexcept { m_id = newid; }
 
     [[nodiscard]] auto state() const noexcept -> sockstate_t { return m_state; }
@@ -723,13 +704,21 @@ int SocketContext::on_idle(Sock* ptr) noexcept {
                 }
             }
 
+            int ret = server->on_idle();
+            return ret;
+
         } else {
             if (!ptr->is_blocking()) {
                 xp::sleep(1);
             }
         }
     } else {
-        if (ptr != nullptr && !ptr->is_blocking()) {
+        if (ptr != nullptr) {
+            ServerSocket* ss = dynamic_cast<ServerSocket*>(ptr);
+            if (ss) {
+                const auto idl = ss->on_idle();
+                if (idl < 0) return idl;
+            }
             xp::sleep(1);
         }
     }
@@ -938,6 +927,7 @@ void SocketContext::run(ServerSocket* server) {
             printf(
                 "Server exiting because perform_internal_accept returned %d\n",
                 rv);
+            m_should_run = false;
             return;
         }
         auto ctx = server->pimpl->context();

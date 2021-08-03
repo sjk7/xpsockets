@@ -9,26 +9,17 @@ static inline std::atomic<bool> we_run{true};
 static inline std::atomic<bool> g_wait{true};
 static inline std::atomic<bool> client_thread_finished{true};
 
-struct socket_context : xp::SocketContext {
-    int on_idle(xp::Sock* psock) noexcept override {
+struct simple_server : xp::ServerSocket {
+    simple_server()
+        : xp::ServerSocket("Dumb server", xp::endpoint_t{"0.0.0.0", 8080}) {
+        g_wait = false;
+    }
+    int on_idle() noexcept override {
         if (g_wait) g_wait = false;
         if (!we_run) {
             return -1;
         }
-        return xp::SocketContext::on_idle(psock);
-    }
-    virtual void run(xp::ServerSocket* server) override {
-        return xp::SocketContext::run(server);
-    }
-};
-
-inline socket_context my_context;
-
-struct simple_server : xp::ServerSocket {
-    simple_server()
-        : xp::ServerSocket(
-            "Dumb server", xp::endpoint_t{"0.0.0.0", 8080}, &my_context) {
-        g_wait = false;
+        return 0;
     }
 
     virtual int on_new_client(xp::AcceptedSocket* a) override {
@@ -68,6 +59,7 @@ struct mystruct {
     int test{1};
     friend std::ostream& operator<<(std::ostream& os, const mystruct& s) {
         os << s.test;
+        return os;
     }
 };
 inline void server_thread() {
@@ -78,10 +70,11 @@ inline void server_thread() {
     xp::to_string(s);
     (void)s;
     std::thread bad_client_thread = std::thread{badly_behaved_client};
+
+    bad_client_thread.join();
     while (serv.is_listening()) {
         xp::SocketContext::sleep(1);
     }
-    bad_client_thread.join();
     assert(!serv.is_listening());
     return;
 }
@@ -120,14 +113,14 @@ inline int test_badly_behaved_client(int ctr = 2) {
 
             assert(rx.return_value == -1);
             (void)rx;
-        }; // while()
 
+        }; // while()
         we_run = false;
         std::cout << std::endl;
-        t.join();
         while (!client_thread_finished) {
             xp::SocketContext::sleep(1);
         }
+        t.join();
     }
     std::cout << "\n\n"
               << "badly behaved client test complete success!" << std::endl;

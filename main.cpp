@@ -20,9 +20,9 @@ void test_server() {
 }
 
 int main() {
-    while (1) {
-        test_badly_behaved_client();
-    }
+
+    test_badly_behaved_client(3);
+
     return 0;
 
     test_server();

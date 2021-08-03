@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <atomic>
 
 namespace xp {
 inline constexpr std::string_view simple_http_request
@@ -58,7 +59,7 @@ class SocketContext {
     virtual void on_start(Sock* sck) const noexcept;
     static void sleep(long ms) noexcept;
     virtual void run(ServerSocket* server);
-    bool m_should_run{true};
+    std::atomic<bool> m_should_run{true};
     bool should_run() const noexcept { return m_should_run; }
 
 #if defined(_DEBUG) || !defined(NDEBUG)
@@ -68,7 +69,7 @@ class SocketContext {
 #endif
 };
 
-static inline void sleep_ms(int ms) {
+inline void sleep_ms(int ms) {
     return SocketContext::sleep(ms);
 }
 
@@ -245,6 +246,7 @@ class ServerSocket : public Sock {
     protected:
     xp::sock_handle_t accept(xp::endpoint_t& endpoint, bool debug_info);
     bool remove_client(AcceptedSocket* client_to_remove, const char* why);
+    virtual int on_idle() noexcept { return 0; }
 
     // return < 0 to disconnect the client, and NOT add him to the clients()
     // collection

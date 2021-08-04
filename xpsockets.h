@@ -180,7 +180,7 @@ auto constexpr to_native(const xp::sock_handle_t h) noexcept {
 
 /** Returns true on success, or false if there was an error */
 inline bool sock_set_blocking(native_socket_type fd, bool blocking) noexcept {
-    if (native_socket_type{fd} < 0) {
+    if (native_socket_type{fd} < 0) { //-V547
         return false;
     }
 

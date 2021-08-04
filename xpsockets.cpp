@@ -63,7 +63,7 @@ static inline auto mypoll(const xp::native_socket_type fd,
     const auto n = poll(&pollfd, 1, to_int(t));
     if (n > 0) {
         auto val = pollfd.revents & static_cast<unsigned int>(what_for);
-        if (val){
+        if (val) {
             return n;
         }
 
@@ -368,7 +368,7 @@ template <typename CRTP> class SocketBase {
         read_callback_t* read_callback) {
         xp::ioresult_t ret{};
         ret.return_value = to_int(xp::errors_t::NONE);
-        data.append(tmp.data(), bytes_read);
+        data.append(tmp.data(), (size_t)bytes_read);
         ret.bytes_transferred += static_cast<size_t>(bytes_read);
 
         if (read_callback != nullptr) {
@@ -763,11 +763,12 @@ static inline xp::native_socket_type native_accept(
     return empty_ret;
 }
 
-xp::duration_t xp::since(const timepoint_t& when) noexcept{
-    return xp::duration_t{to_int(xp::system_current_time_millis()) - to_int(when) };
+xp::duration_t xp::since(const timepoint_t& when) noexcept {
+    return xp::duration_t{
+        to_int(xp::system_current_time_millis()) - to_int(when)};
 }
 
-std::string to_display_time(const xp::duration_t& dur){
+std::string xp::to_display_time(const xp::duration_t& dur) {
 
     const auto as_int = to_int(dur);
     const auto as_seconds = as_int / 1000UL;
@@ -775,31 +776,40 @@ std::string to_display_time(const xp::duration_t& dur){
     time_t t = {};
 
     t += as_seconds;
-    struct tm* ctm = gmtime(&t);
-    ctm->tm_mday--; // coz the first day is the 1st of jan, and we want to start at zero
-    if (ctm->tm_mday > 0){
+    struct tm ptm = {};
+    const auto e = gmtime_s(&ptm, &t);
+    assert(e == 0);
+    struct tm* ctm = &ptm;
+    ctm->tm_mday--; // coz the first day is the 1st of jan, and we want to start
+                    // at zero
+    if (ctm->tm_mday > 0) {
 
-        return xp::concat(std::setfill('0') , std::setw(2),ctm->tm_mday, "::",
-                          std::setfill('0') , std::setw(2),ctm->tm_hour, ":",
-                          std::setfill('0') , std::setw(2), ctm->tm_min, ":",
-                          std::setfill('0') , std::setw(2),ctm->tm_sec);
-    }else{
-        return xp::concat(std::setfill('0') , std::setw(2),ctm->tm_hour, ":",
-                          std::setfill('0') , std::setw(2),ctm->tm_min, ":",
-                          std::setfill('0') , std::setw(2),ctm->tm_sec);
+        return xp::concat(std::setfill('0'), std::setw(2), ctm->tm_mday,
+            "::", std::setfill('0'), std::setw(2), ctm->tm_hour, ":",
+            std::setfill('0'), std::setw(2), ctm->tm_min, ":",
+            std::setfill('0'), std::setw(2), ctm->tm_sec);
+    } else {
+        return xp::concat(std::setfill('0'), std::setw(2), ctm->tm_hour, ":",
+            std::setfill('0'), std::setw(2), ctm->tm_min, ":",
+            std::setfill('0'), std::setw(2), ctm->tm_sec);
     }
-
 }
 
-inline void show_summary(ServerSocket& serv, const xp::ServerStats& stats){
+inline void show_summary(ServerSocket& serv, const xp::ServerStats& stats) {
     const auto peak_ago = xp::since(stats.when_peak_clients);
+
     const auto peak_accepts_ago = xp::since(stats.when_peak_accepts);
+    std::cout << std::endl;
     std::cout << "Server stats, for: " << serv.name() << std::endl
               << "Listening: " << xp::to_string(serv.endpoint()) << std::endl
-              << "Peak clients: " << stats.peak_clients << ",: " << to_display_time(peak_ago) << " ago." << std::endl
+              << "Peak clients: " << stats.peak_clients
+              << ",: " << to_display_time(peak_ago) << " ago." << std::endl
               << "Total accepts: " << stats.naccepts << std::endl
-              << "Max concurrent active accepts: " << stats.npeak_active_accepts << " " << to_display_time(peak_accepts_ago) << " ago." << std::endl;
-
+              << "Max concurrent active accepts: " << stats.npeak_active_accepts
+              << " " << to_display_time(peak_accepts_ago) << " ago."
+              << std::endl
+              << std::endl;
+    ;
 }
 
 auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
@@ -811,7 +821,6 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
     if (m_stats.nactive_accepts > ddos_threshold) {
         xp::sleep(1); // anti-ddos
     }
-
 
     xp::native_socket_type acc = to_native(xp::invalid_handle);
     if (!this->is_blocking()) {
@@ -826,41 +835,43 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
         if (m_stats.when_shown_last_summary == xp::timepoint_t::zero)
             m_stats.when_shown_last_summary = now();
 
+        const auto dur = xp::duration(
+            xp::system_current_time_millis(), m_stats.when_last_client);
+        if (dur >= xp::duration_t::five_seconds) {
+            const auto since_shown
+                = xp::duration(xp::system_current_time_millis(),
+                    m_stats.when_shown_last_summary);
 
-        const auto dur = xp::duration(xp::system_current_time_millis(), m_stats.when_last_client);
-        if (dur >= xp::duration_t::five_seconds){
-            const auto since_shown = xp::duration(xp::system_current_time_millis(), m_stats.when_shown_last_summary);
-
-            if (since_shown > xp::duration_t::one_minute){
+            if (since_shown > xp::duration_t::one_minute) {
                 m_stats.when_shown_last_summary = xp::now();
                 show_summary(*this, m_stats);
             }
         }
 
+        if (!is_blocking()) {
+            const auto e = socket_error();
 
-        if (!is_blocking()){
-        const auto e = socket_error();
+            if (e == to_int(xp::errors_t::WOULD_BLOCK)
+                || e == to_int(xp::errors_t::TIMED_OUT)
+                || e == to_int(xp::errors_t::NONE)) {
+                if (pimpl->context()) {
+                    if (pimpl->on_idle() < 0) {
+                        return xp::sock_handle_t::invalid;
+                    }
+                } else {
+                    if (debug_info) {
+                        fprintf(stderr,
+                            "Weird (non-blocking) Accept error: %d:%s",
+                            xp::socket_error(),
+                            xp::socket_error_string().c_str());
+                        fprintf(stderr, "\n");
+                    }
 
-        if (e == to_int(xp::errors_t::WOULD_BLOCK)
-            || e == to_int(xp::errors_t::TIMED_OUT)
-            || e == to_int(xp::errors_t::NONE)
-            ) {
-            if (pimpl->context()) {
-                if (pimpl->on_idle() < 0) {
-                    return xp::sock_handle_t::invalid;
+                    return xp::invalid_handle;
                 }
-            }else{
-                if (debug_info) {
-                    fprintf(stderr, "Weird (non-blocking) Accept error: %d:%s", xp::socket_error(),
-                        xp::socket_error_string().c_str());
-                    fprintf(stderr, "\n");
-                }
-
-                return xp::invalid_handle;
+                return xp::sock_handle_t::invalid;
             }
-            return xp::sock_handle_t::invalid;
-        }
-        }else{
+        } else {
             // blocking: all we need to know is that there is nothing to accept:
             return xp::sock_handle_t::invalid;
         }
@@ -910,7 +921,7 @@ auto ServerSocket::on_after_accept_new_client(
     SocketContext* ctx, AcceptedSocket* a, bool debug_info) noexcept -> int {
     std::ignore = ctx;
     std::ignore = a;
-    std::ignore = debug_info;
+    std::ignore = debug_info; //-V601
     return -1; // to signify client socket should go away now
 }
 
@@ -931,7 +942,7 @@ int64_t ServerSocket::perform_internal_accept(
         }
     }
 
-    if (acc) {
+    if (acc) { //-V581
         m_stats.nactive_accepts++;
         if (m_stats.nactive_accepts > m_stats.npeak_active_accepts) {
             m_stats.npeak_active_accepts = m_stats.nactive_accepts;
@@ -1073,14 +1084,14 @@ auto ServerSocket::listen() -> int {
     // if this is set low, ab complains about: apr_socket_recv: Connection reset
     // by peer (104)
     int system_max_conn = SOMAXCONN;
-    if (SOMAXCONN > 0 && SOMAXCONN <= LOWMAXCONN) {
+    if (SOMAXCONN > 0 && SOMAXCONN <= LOWMAXCONN) { //-V560
         system_max_conn = check_max_conn(system_max_conn);
     }
 #ifdef __linux__
     system_max_conn = 16328;
 #endif
 
-    if (system_max_conn <= LOWMAXCONN && system_max_conn > 0) {
+    if (system_max_conn <= LOWMAXCONN && system_max_conn > 0) { //-V560
         fprintf(stderr,
             "Warn: Some Oses have a low maximum of concurrent "
             "connections,\n"
@@ -1094,8 +1105,9 @@ auto ServerSocket::listen() -> int {
 #endif
     }
     static constexpr int reasonable_max = 20000;
-    auto actual_max
-        = system_max_conn > reasonable_max ? reasonable_max : system_max_conn;
+    auto actual_max = system_max_conn > reasonable_max
+        ? reasonable_max
+        : system_max_conn; //-V547
 #ifdef _WIN32
     actual_max = SOMAXCONN;
 #endif
@@ -1252,7 +1264,6 @@ bool xp::ServerSocket::remove_client(Sock* client_to_remove, const char* why) {
         m_clients.erase(it);
         delete found_client;
     }
-
 
     if (debug) {
 

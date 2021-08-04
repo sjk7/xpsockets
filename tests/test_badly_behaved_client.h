@@ -24,7 +24,7 @@ struct simple_server : xp::ServerSocket {
         }
         return 0;
     }
-    virtual ~simple_server() = default;
+    ~simple_server() override = default;
 };
 
 struct my_client : xp::ConnectingSocket {
@@ -32,7 +32,7 @@ struct my_client : xp::ConnectingSocket {
         : xp::ConnectingSocket("bad client",
             xp::endpoint_t{"127.0.0.1", my_port},
             xp::msec_timeout_t::ten_minutes) {}
-    virtual ~my_client() = default;
+    ~my_client() override = default;
 };
 
 inline void badly_behaved_client() {

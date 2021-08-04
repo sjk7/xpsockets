@@ -889,11 +889,11 @@ int64_t ServerSocket::perform_internal_accept(
         m_stats.nactive_accepts++;
         if (m_stats.nactive_accepts > m_stats.npeak_active_accepts) {
             m_stats.npeak_active_accepts = m_stats.nactive_accepts;
-            // printf("peak active accepts: %ld\n\n", m_npeak_active_accepts);
         }
 
         m_stats.naccepts++;
         retval = 0;
+        auto ptr = acc.get();
         auto should_accept = on_new_client(acc);
         m_stats.nactive_accepts--;
 
@@ -904,7 +904,6 @@ int64_t ServerSocket::perform_internal_accept(
             if (oaa < 0) {
                 remove_client(should_accept,
                     concat("on_after_accept returned a valid pointer").c_str());
-                return 0;
             }
         } else {
             if (debug_info) {
@@ -912,11 +911,14 @@ int64_t ServerSocket::perform_internal_accept(
                        "returned null\n",
                     this->name().data(), xp::to_string(client_endpoint).data());
             }
-
-            return 0;
         }
+
+        // all paths remove the client
+        remove_client(ptr, "should_accept completed");
+        return 0;
     }
 
+    // here acc was empty; nothing accepted
     return retval;
 }
 
@@ -1088,7 +1090,7 @@ AcceptedSocket* ServerSocket::on_new_client(
 
     stopwatch sw("", !debug);
     if (debug) {
-        const auto astr = to_string(retval);
+        const auto astr = to_string((const Sock*)retval);
         sw.id_set(astr);
     }
 
@@ -1102,8 +1104,12 @@ AcceptedSocket* ServerSocket::on_new_client(
             t, retval->data(), [&](auto& bytes_read, auto& mydata) noexcept {
                 assert(bytes_read); // should only return to us when data
                                     // ready, or fail with timeout
-                std::ignore = bytes_read;
-                std::ignore = mydata;
+                if (debug) {
+
+                    std::cout << "read: " << mydata << endl;
+                    std::ignore = bytes_read;
+                    std::ignore = mydata;
+                }
                 const auto found = retval->data().find("\r\n\r\n");
                 if (found != std::string::npos) {
                     good = true;
@@ -1120,14 +1126,23 @@ AcceptedSocket* ServerSocket::on_new_client(
                     "****Did not send all header data: sent = "
                     "%" PRId64 " serr = %s\n ",
                     sent.return_value, retval->last_error_string().c_str());
-            }
+            } else {
 
+                if (debug) {
+                    std::cout << "Header sent OK" << endl;
+                }
+            }
             sent = retval->send(retval->data());
             if (sent.bytes_transferred != retval->data().size()) {
                 fprintf(stderr,
                     "****Did not send all body data: sent = %" PRId64
                     " serr = %s\n ",
                     sent.return_value, retval->last_error_string().c_str());
+            } else {
+
+                if (debug) {
+                    std::cout << "Header sent OK" << endl;
+                }
             }
             return nullptr;
         }
@@ -1146,8 +1161,7 @@ AcceptedSocket* ServerSocket::on_new_client(
     return nullptr;
 }
 
-bool xp::ServerSocket::remove_client(
-    AcceptedSocket* client_to_remove, const char* why) {
+bool xp::ServerSocket::remove_client(Sock* client_to_remove, const char* why) {
 
     const auto ctx = this->pimpl->context();
     bool debug = false;
@@ -1155,16 +1169,17 @@ bool xp::ServerSocket::remove_client(
         debug = ctx->debug_info;
     }
 
-    const AcceptedSocket* found_client = nullptr;
+    const Sock* found_client = nullptr;
     auto it = std::remove_if(
-        m_clients.begin(), m_clients.end(), [&](const AcceptedSocket* client) {
+        m_clients.begin(), m_clients.end(), [&](const Sock* client) {
             const auto b = client_to_remove == client;
             if (b) {
                 if (debug) {
 
-                    printf("removing client, then calling shutdown, with fd:%d "
-                           "and id "
-                           "%" PRIu64 "\n",
+                    printf(
+                        "removing client, then calling shutdown, with fd: %d "
+                        "and id: "
+                        "%" PRIu64 "\n",
                         static_cast<int>(client_to_remove->pimpl->fd()),
                         client_to_remove->id());
                     printf("reason %s\n", why);

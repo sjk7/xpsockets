@@ -113,8 +113,8 @@ class stopwatch {
     }
     void show() noexcept {
         if (!m_silent) {
-            printf("%s took: %" PRIu64 " ms.\n", m_sid.c_str(),
-                to_int(duration(m_end, m_start)));
+            printf("%s took: %ld ms.\n", m_sid.c_str(),
+                (long)to_int(duration(m_end, m_start)));
         }
         m_silent = true;
     }

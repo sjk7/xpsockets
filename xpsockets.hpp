@@ -102,7 +102,7 @@ class Sock : public no_copy {
     auto send(std::string_view data) noexcept -> xp::ioresult_t;
     [[nodiscard]] bool is_blocking() const noexcept;
     bool blocking_set(bool should_blck);
-    xp::sock_handle_t fd() const noexcept;
+    [[nodiscard]] xp::sock_handle_t fd() const noexcept;
     [[nodiscard]] uint64_t id() const noexcept;
     void id_set(uint64_t newid) noexcept;
 
@@ -134,8 +134,8 @@ class Sock : public no_copy {
 };
 
 namespace has_insertion_operator_impl {
-    typedef char no;
-    typedef std::array<char, 2> yes;
+    using no = char;
+    using yes = std::array<char, 2>;
 
     struct any_t {
         template <typename T> any_t(T const&);
@@ -235,19 +235,21 @@ class ServerSocket : public Sock {
         return true;
     }
 
-    const std::vector<AcceptedSocket*>& clients() const noexcept {
+    [[nodiscard]] const std::vector<Sock*>& clients() const noexcept {
         return m_clients;
     }
-    virtual size_t max_clients() const noexcept { return m_max_clients; }
+    [[nodiscard]] virtual size_t max_clients() const noexcept {
+        return m_max_clients;
+    }
 
     SocketContext* context() noexcept;
 
-    SocketContext* context_const() const noexcept {
+    [[nodiscard]] SocketContext* context_const() const noexcept {
         auto pthis = const_cast<ServerSocket*>(this);
         return pthis->context();
     }
 
-    bool is_listening() const noexcept {
+    [[nodiscard]] bool is_listening() const noexcept {
         if (context_const()) {
             return context_const()->should_run();
         }
@@ -257,7 +259,7 @@ class ServerSocket : public Sock {
 
     protected:
     xp::sock_handle_t accept(xp::endpoint_t& endpoint, bool debug_info);
-    bool remove_client(AcceptedSocket* client_to_remove, const char* why);
+    bool remove_client(Sock* client_to_remove, const char* why);
     virtual int on_idle() noexcept { return 0; }
 
     // return < 0 to disconnect the client, and NOT add him to the clients()
@@ -267,10 +269,10 @@ class ServerSocket : public Sock {
     // return < 0 means quit listening
     int64_t perform_internal_accept(
         SocketContext* ctx, bool debug_info) noexcept;
-    ServerStats stats() const noexcept { return m_stats; }
+    [[nodiscard]] ServerStats stats() const noexcept { return m_stats; }
 
     private:
-    std::vector<AcceptedSocket*> m_clients;
+    std::vector<Sock*> m_clients;
     uint32_t m_id_seed{0};
     size_t m_max_clients{xp::MAX_CLIENTS};
     ServerStats m_stats{};

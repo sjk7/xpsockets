@@ -11,7 +11,7 @@ struct myserver : xp::ServerSocket {
     myserver(std::string_view name, const xp::endpoint_t& listen_where)
         : xp::ServerSocket(name, listen_where) {}
 
-    virtual ~myserver() = default;
+    ~myserver() override = default;
 };
 
 void test_server() {
@@ -24,26 +24,15 @@ int main() {
 
     test_badly_behaved_client(3);
 
-    return 0;
-
     test_server();
-    struct MySockContext : xp::SocketContext {
-        mutable int ctr = 0;
-        int on_idle(xp::Sock* /*sck*/) noexcept override {
-            // cout << "on_idle called for sock: " << sck->name() << endl;
-            xp::SocketContext::sleep(1);
-            ctr++;
-            return 0;
-        }
-    };
 
     {
         try {
-            MySockContext myctx;
+
             // example with lambda, using read2()
             xp::ConnectingSocket consock("my connecting socket",
                 xp::endpoint_t{"google.com", xp::port_type::testing_port},
-                xp::msec_timeout_t::default_timeout, &myctx);
+                xp::msec_timeout_t::default_timeout);
             cout << "Sending the following request: " << xp::simple_http_request
                  << endl;
             const xp::ioresult_t send_result
@@ -67,8 +56,7 @@ int main() {
                         return int64_t{0};
                     });
             std::ignore = read_result;
-            cout << "Reading data from remote server took: " << myctx.ctr
-                 << " ms." << endl;
+
             assert(!consock.is_valid()); // should be closed
             assert(read_result.return_value == -my_result);
             const std::string_view sv(data.data(), data.size());

@@ -25,8 +25,15 @@ namespace xp {
 static constexpr auto TOO_MANY_CLIENTS = -1000;
 static constexpr auto MAX_CLIENTS = 100001;
 
-enum class timepoint_t : uint64_t {};
-enum class duration_t : uint64_t { default_timeout_duration = 20000 };
+enum class timepoint_t : uint64_t {zero = 0};
+enum class duration_t : uint64_t {
+    one_second = 1000,
+    one_minute = one_second * 60,
+    one_hour = one_minute * 60,
+    one_day = one_hour* 24,
+    five_seconds = one_second * 5,
+    twenty_seconds = one_second * 20,
+    default_timeout_duration = twenty_seconds };
 
 // no, we are not using chrono due to a) bloat and b) it's buggy in Windows if
 // the clock changes.
@@ -46,6 +53,9 @@ inline duration_t duration(const timepoint_t a, const timepoint_t b) noexcept {
     const auto myb = to_int(b);
     return duration_t{mya - myb};
 }
+
+duration_t since(const timepoint_t& when) noexcept;
+
 
 #ifdef _WIN32
 struct xptimespec_t {
@@ -84,6 +94,8 @@ inline timepoint_t system_current_time_millis() noexcept {
     return timepoint_t{retval};
 #endif
 }
+
+inline timepoint_t now() noexcept{ return system_current_time_millis();}
 
 inline bool operator>(const duration_t a, const duration_t b) noexcept {
     return to_int(a) > to_int(b);

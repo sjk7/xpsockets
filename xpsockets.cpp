@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <algorithm> // remove_if
+#include <iomanip>
 
 #ifndef _WIN32
 #include <poll.h>
@@ -61,16 +62,9 @@ static inline auto mypoll(const xp::native_socket_type fd,
 
     const auto n = poll(&pollfd, 1, to_int(t));
     if (n > 0) {
-        if (pollfd.revents & POLLIN) {
-            if (what_for == pollevents_t::poll_read) {
-                return n;
-            }
-        }
-
-        if (pollfd.revents & POLLOUT) {
-            if (what_for == pollevents_t::poll_write) {
-                return n;
-            }
+        auto val = pollfd.revents & static_cast<unsigned int>(what_for);
+        if (val){
+            return n;
         }
 
         if (pollfd.revents & POLLHUP) {
@@ -147,8 +141,8 @@ inline auto init_system() {
 }
 
 template <typename CRTP> class SocketBase {
-    friend class AcceptedSocket;
-    friend class ServerSocket;
+    friend class xp::AcceptedSocket;
+    friend class xp::ServerSocket;
 
     public:
     // constructor for server clients, or for any case
@@ -237,7 +231,7 @@ template <typename CRTP> class SocketBase {
         if (this->context()) {
             if (this->context()->debug_info) {
                 printf("called shutdown() on fd: %d , with id: %" PRIu64
-                       "becoz %s\n",
+                       " becoz %s\n",
                     static_cast<int>(m_fd), this->m_id, why);
             }
         }
@@ -324,11 +318,6 @@ template <typename CRTP> class SocketBase {
                     = concat("Timed out in wait_for_ready: ", why, " after ",
                         to_int(timeout), " ms.");
                 return psock->m_last_error;
-            }
-            if (pollres & POLLHUP) {
-                psock->m_slast_error = "Remote client hung up";
-                psock->m_last_error = to_int(xp::errors_t::CONN_ABORTED);
-                return -POLLHUP;
             }
 
             if (pollres < 0) {
@@ -774,6 +763,45 @@ static inline xp::native_socket_type native_accept(
     return empty_ret;
 }
 
+xp::duration_t xp::since(const timepoint_t& when) noexcept{
+    return xp::duration_t{to_int(xp::system_current_time_millis()) - to_int(when) };
+}
+
+std::string to_display_time(const xp::duration_t& dur){
+
+    const auto as_int = to_int(dur);
+    const auto as_seconds = as_int / 1000UL;
+
+    time_t t = {};
+
+    t += as_seconds;
+    struct tm* ctm = gmtime(&t);
+    ctm->tm_mday--; // coz the first day is the 1st of jan, and we want to start at zero
+    if (ctm->tm_mday > 0){
+
+        return xp::concat(std::setfill('0') , std::setw(2),ctm->tm_mday, "::",
+                          std::setfill('0') , std::setw(2),ctm->tm_hour, ":",
+                          std::setfill('0') , std::setw(2), ctm->tm_min, ":",
+                          std::setfill('0') , std::setw(2),ctm->tm_sec);
+    }else{
+        return xp::concat(std::setfill('0') , std::setw(2),ctm->tm_hour, ":",
+                          std::setfill('0') , std::setw(2),ctm->tm_min, ":",
+                          std::setfill('0') , std::setw(2),ctm->tm_sec);
+    }
+
+}
+
+inline void show_summary(ServerSocket& serv, const xp::ServerStats& stats){
+    const auto peak_ago = xp::since(stats.when_peak_clients);
+    const auto peak_accepts_ago = xp::since(stats.when_peak_accepts);
+    std::cout << "Server stats, for: " << serv.name() << std::endl
+              << "Listening: " << xp::to_string(serv.endpoint()) << std::endl
+              << "Peak clients: " << stats.peak_clients << ",: " << to_display_time(peak_ago) << " ago." << std::endl
+              << "Total accepts: " << stats.naccepts << std::endl
+              << "Max concurrent active accepts: " << stats.npeak_active_accepts << " " << to_display_time(peak_accepts_ago) << " ago." << std::endl;
+
+}
+
 auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
     -> xp::sock_handle_t {
     struct sockaddr_in addr_in = {};
@@ -783,6 +811,7 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
     if (m_stats.nactive_accepts > ddos_threshold) {
         xp::sleep(1); // anti-ddos
     }
+
 
     xp::native_socket_type acc = to_native(xp::invalid_handle);
     if (!this->is_blocking()) {
@@ -794,33 +823,50 @@ auto ServerSocket::accept(xp::endpoint_t& client_endpoint, bool debug_info)
     }
 
     if (acc == to_native(xp::invalid_handle)) {
+        if (m_stats.when_shown_last_summary == xp::timepoint_t::zero)
+            m_stats.when_shown_last_summary = now();
+
+
+        const auto dur = xp::duration(xp::system_current_time_millis(), m_stats.when_last_client);
+        if (dur >= xp::duration_t::five_seconds){
+            const auto since_shown = xp::duration(xp::system_current_time_millis(), m_stats.when_shown_last_summary);
+
+            if (since_shown > xp::duration_t::one_minute){
+                m_stats.when_shown_last_summary = xp::now();
+                show_summary(*this, m_stats);
+            }
+        }
+
+
+        if (!is_blocking()){
         const auto e = socket_error();
 
         if (e == to_int(xp::errors_t::WOULD_BLOCK)
             || e == to_int(xp::errors_t::TIMED_OUT)
-            || e == to_int(xp::errors_t::NONE)) {
+            || e == to_int(xp::errors_t::NONE)
+            ) {
             if (pimpl->context()) {
                 if (pimpl->on_idle() < 0) {
                     return xp::sock_handle_t::invalid;
                 }
+            }else{
+                if (debug_info) {
+                    fprintf(stderr, "Weird (non-blocking) Accept error: %d:%s", xp::socket_error(),
+                        xp::socket_error_string().c_str());
+                    fprintf(stderr, "\n");
+                }
+
+                return xp::invalid_handle;
             }
             return xp::sock_handle_t::invalid;
         }
-        assert("a non-accept should always lead to idle(), but somehow we "
-               "missed it"
-            == nullptr);
-        {
-            if (debug_info) {
-                fprintf(stderr, "Weird Accept error: %d:%s", xp::socket_error(),
-                    xp::socket_error_string().c_str());
-                fprintf(stderr, "\n");
-            }
-
-            return xp::invalid_handle;
+        }else{
+            // blocking: all we need to know is that there is nothing to accept:
+            return xp::sock_handle_t::invalid;
         }
     } else {
         // accepted!
-
+        this->m_stats.when_last_client = xp::system_current_time_millis();
         get_client_endpoint(addr_in, client_endpoint);
         if (debug_info) {
             // printf("ServerSocket '%s' asked to accept a client\n",
@@ -889,6 +935,7 @@ int64_t ServerSocket::perform_internal_accept(
         m_stats.nactive_accepts++;
         if (m_stats.nactive_accepts > m_stats.npeak_active_accepts) {
             m_stats.npeak_active_accepts = m_stats.nactive_accepts;
+            m_stats.when_peak_accepts = xp::now();
         }
 
         m_stats.naccepts++;
@@ -1029,6 +1076,9 @@ auto ServerSocket::listen() -> int {
     if (SOMAXCONN > 0 && SOMAXCONN <= LOWMAXCONN) {
         system_max_conn = check_max_conn(system_max_conn);
     }
+#ifdef __linux__
+    system_max_conn = 16328;
+#endif
 
     if (system_max_conn <= LOWMAXCONN && system_max_conn > 0) {
         fprintf(stderr,
@@ -1203,17 +1253,6 @@ bool xp::ServerSocket::remove_client(Sock* client_to_remove, const char* why) {
         delete found_client;
     }
 
-    if (debug) {
-        printf("\n\nCurrent number of connected clients: %d\n",
-            (int)m_clients.size());
-        printf("Peak number of connected clients: %zd,"
-               "\n",
-            m_stats.peak_clients);
-        const auto ms_ago = xp::duration(
-            xp::system_current_time_millis(), m_stats.peaked_when);
-        printf("Peak of clients was: %" PRIu64 " seconds ago\n",
-            to_int(ms_ago) / xp::ms_in_sec);
-    }
 
     if (debug) {
 

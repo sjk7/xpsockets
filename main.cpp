@@ -22,7 +22,7 @@ void test_server() {
 
 int main() {
 
-    test_badly_behaved_client(3);
+   test_badly_behaved_client(3);
 
     test_server();
 

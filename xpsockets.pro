@@ -17,4 +17,13 @@ win32:{
     LIBS += -lws2_32 -lwinmm
 }
 
-unix: release: DEFINES += NDEBUG
+unix:{
+    LIBS += -lpthread
+}
+
+CONFIG(release, debug|release) {
+    #This is a release build
+    defines += NDEBUG
+} else {
+    #This is a debug build
+}

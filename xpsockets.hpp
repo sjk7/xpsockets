@@ -69,7 +69,7 @@ class SocketContext {
 #if defined(_DEBUG) || !defined(NDEBUG)
     bool debug_info{true};
 #else
-    bool debug_info{false};
+    bool debug_info{true};
 #endif
 };
 
@@ -200,10 +200,13 @@ class AcceptedSocket : public Sock {
 
 struct ServerStats {
     size_t peak_clients;
-    xp::timepoint_t peaked_when;
+    xp::timepoint_t when_peak_clients;
+    xp::timepoint_t when_last_client;
+    xp::timepoint_t when_shown_last_summary;
     uint64_t naccepts;
     uint32_t nactive_accepts;
     uint32_t npeak_active_accepts;
+    xp::timepoint_t when_peak_accepts;
     uint64_t nclients_disconnected_during_read;
 };
 
@@ -230,7 +233,7 @@ class ServerSocket : public Sock {
         client.release(); // vector owns it now
         if (m_clients.size() > m_stats.peak_clients) {
             m_stats.peak_clients = m_clients.size();
-            m_stats.peaked_when = xp::system_current_time_millis();
+            m_stats.when_peak_clients = xp::system_current_time_millis();
         }
         return true;
     }

@@ -61,6 +61,7 @@ enum class errors_t : int32_t {
     IS_CONN = EISCONN,
     WOULD_BLOCK = EAGAIN,
     CONN_ABORTED = ECONNABORTED,
+    BAD_FILE_DESCRIPTOR = EBADF,
     UNEXPECTED = -1000
 #endif
 

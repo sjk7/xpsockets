@@ -3,6 +3,7 @@
 // http://www.viva64.com
 #include "tests/test_badly_behaved_client.h"
 #include "xpsockets.hpp"
+#include "simple_http_server.cpp"
 #include <cassert>
 #include <iostream>
 
@@ -21,8 +22,9 @@ void test_server() {
 }
 
 int main() {
+    run_file_server();
 
-   test_badly_behaved_client(3);
+    test_badly_behaved_client(3);
 
     test_server();
 

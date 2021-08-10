@@ -930,10 +930,10 @@ auto ServerSocket::on_after_accept_new_client(
     return -1; // to signify client socket should go away now
 }
 
-// return true if an accept took place
+// return < 0 to terminate the server
 int64_t ServerSocket::perform_internal_accept(
     SocketContext* ctx, bool debug_info) noexcept {
-    int retval = false;
+    int retval = 1;
     assert(ctx);
     xp::endpoint_t client_endpoint{};
     std::unique_ptr<AcceptedSocket> acc
@@ -955,7 +955,7 @@ int64_t ServerSocket::perform_internal_accept(
         }
 
         m_stats.naccepts++;
-        retval = 0;
+
         auto ptr = acc.get();
         auto should_accept = on_new_client(acc);
         m_stats.nactive_accepts--;
@@ -978,11 +978,11 @@ int64_t ServerSocket::perform_internal_accept(
 
         // all paths remove the client
         remove_client(ptr, "should_accept completed");
-        return 0;
+        return retval;
     }
 
     // here acc was empty; nothing accepted
-    return retval;
+    return 0;
 }
 
 void SocketContext::run(ServerSocket* server) noexcept {
@@ -1166,6 +1166,7 @@ AcceptedSocket* ServerSocket::on_new_client(
     bool good = false;
     const auto hdr = std::string_view{xp::simple_http_response_no_cl};
 
+    bool do_default = true;
     while (found == std::string::npos) {
         const auto myread = retval->read_until(
             t, retval->data(), [&](auto& bytes_read, auto& mydata) noexcept {
@@ -1178,14 +1179,24 @@ AcceptedSocket* ServerSocket::on_new_client(
                     std::ignore = mydata;
                 }
                 const auto found = retval->data().find("\r\n\r\n");
-                if (found != std::string::npos) {
-                    good = true;
-                    return 1;
-                }
+                good = found != std::string::npos;
+                if (good) return 1;
                 sw.restart();
 
                 return 0;
             });
+
+        if (good) {
+
+            bool handled
+                = on_got_request(retval, retval->data().substr(0, found));
+            do_default = !handled;
+        }
+
+        if (!do_default) {
+            return nullptr;
+        }
+
         if (good) {
             auto sent = retval->send(hdr);
             if (sent.bytes_transferred != hdr.size()) {

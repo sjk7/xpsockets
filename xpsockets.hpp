@@ -37,6 +37,18 @@ inline constexpr std::string_view simple_http_response_no_cl
       "Connection: close\r\n"
       "Server: C++Test server\r\n\r\n";
 
+inline constexpr std::string_view simple_http_response_no_cl_ico
+    = "HTTP/1.1 200 OK\r\n"
+      "Content-Type: 'image/ico'\r\n"
+      "Connection: close\r\n"
+      "Server: C++Test server\r\n\r\n";
+
+inline constexpr std::string_view simple_http_response_no_cl_404
+    = "HTTP/1.1 404 Not Found\r\n"
+      "Content-Type: text/html\r\n"
+      "Connection: close\r\n"
+      "Server: C++Test server\r\n\r\n";
+
 #ifndef PURE_VIRTUAL
 #define PURE_VIRTUAL 0
 #endif
@@ -273,6 +285,12 @@ class ServerSocket : public Sock {
     int64_t perform_internal_accept(
         SocketContext* ctx, bool debug_info) noexcept;
     [[nodiscard]] ServerStats stats() const noexcept { return m_stats; }
+
+    virtual bool on_got_request(Sock* client, std::string_view request) {
+        (void)client;
+        (void)request;
+        return false;
+    }
 
     private:
     std::vector<Sock*> m_clients;

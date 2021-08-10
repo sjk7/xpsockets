@@ -5,6 +5,7 @@ CONFIG -= qt
 
 SOURCES += \
         main.cpp \
+        simple_http_server.cpp \
         xpsockets.cpp
 
 HEADERS += \

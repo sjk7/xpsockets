@@ -22,6 +22,7 @@ void test_server() {
 }
 
 int main() {
+
     run_file_server();
 
     test_badly_behaved_client(3);

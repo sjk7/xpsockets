@@ -13,6 +13,11 @@
 #define __STDC_FORMAT_MACROS
 #include <cinttypes>
 #include <tuple> // std::ignore
+#ifndef _WIN32
+#include <unistd.h>
+#else
+#include <direct.h>
+#endif
 
 #ifdef _MSC_VER
 #pragma warning(disable : 26467)

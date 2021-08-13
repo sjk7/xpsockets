@@ -1,7 +1,6 @@
 // simple_http_server.cpp
 #include "xpsockets.hpp"
 #include <fstream>
-#include <unistd.h>
 
 // very dumb and insecure file server.
 // If you base anything on this, you need to restrict
@@ -18,7 +17,7 @@ class fileserver : public xp::ServerSocket {
     void send_file(xp::Sock* client, std::string_view filepath) {
 
         char cwd_buf[512] = {};
-        getcwd(cwd_buf, 512);
+        _getcwd(cwd_buf, 512);
         bool want_ico = false;
         (void)(want_ico);
         if (filepath.find("favicon") != std::string::npos) {

@@ -38,5 +38,8 @@
     <ClCompile Include="..\..\tests\test_badly_behaved_client.h">
       <Filter>Source Files\tests</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\simple_http_server.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
 </Project>

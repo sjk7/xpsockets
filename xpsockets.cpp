@@ -779,13 +779,13 @@ std::string xp::to_display_time(const xp::duration_t& dur) {
 
 #ifdef _WIN32
     struct tm ptm = {};
-    const auto e = gmtime_r((&ptm, &t);
+    const auto e = gmtime_s(&ptm, &t);
     assert(e == 0);
-        struct tm* ctm = &ptm;
+    struct tm* ctm = &ptm;
 #else
     struct tm* ctm = ::gmtime(&t);
 #endif
-    
+
     ctm->tm_mday--; // coz the first day is the 1st of jan, and we want to start
                     // at zero
     if (ctm->tm_mday > 0) {

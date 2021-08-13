@@ -1021,6 +1021,7 @@ ServerSocket::ServerSocket(
     // on a single thread in macos (recv always returns E_WOULDBLOCK
     // for more than one concurrnet client)
     //#endif
+
     constexpr int on = 1;
     const auto rc = ::setsockopt(to_native(this->underlying_socket()),
         SOL_SOCKET, SO_REUSEADDR, (char*)&on, sizeof(on));
@@ -1295,7 +1296,10 @@ bool xp::ServerSocket::remove_client(Sock* client_to_remove, const char* why) {
 AcceptedSocket::AcceptedSocket(xp::sock_handle_t s,
     const endpoint_t& remote_endpoint, std::string_view name,
     ServerSocket* pserver, SocketContext* ctx)
-    : Sock(s, name, remote_endpoint, ctx), m_pserver(pserver) {}
+    : Sock(s, name, remote_endpoint, ctx), m_pserver(pserver) {
+
+
+}
 
 #ifdef _WIN32
 

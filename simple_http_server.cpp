@@ -40,7 +40,7 @@ class fileserver : public xp::ServerSocket {
                 if (!sent_header) {
                     if (is_icon) {
                         auto hsent
-                            = client->send(xp::simple_http_response_no_cl_ico);
+                            = client->send(xp::simple_http_response_no_cl_404);
                         assert(hsent.bytes_transferred > 0);
                     } else {
                         auto hsent
@@ -52,16 +52,13 @@ class fileserver : public xp::ServerSocket {
                 }
                 auto sent = client->send(sv);
                 total_sent += sent.bytes_transferred;
+                printf("Total bytes sent to client: %ld\n", (long)total_sent);
                 if (sent.bytes_transferred != bytes_read) {
+                    assert("you may want to handle this" == nullptr);
                     return;
                 }
+                client->send("\r\n\r\n");
             }
-
-            printf("Total bytes sent to client: %ld\n", (long)total_sent);
-            if (!sent_header) {
-                send_404(client);
-            }
-            client->send("\r\n\r\n");
         }
     }
 

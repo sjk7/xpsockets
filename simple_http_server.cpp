@@ -10,11 +10,11 @@
 // used to hack you)
 class fileserver : public xp::ServerSocket {
     private:
-    void send_404(xp::Sock* client) {
+    static void send_404(xp::Sock* client) {
         client->send(xp::simple_http_response_no_cl_404);
     }
 
-    void send_file(xp::Sock* client, std::string_view filepath) {
+    static void send_file(xp::Sock* client, std::string_view filepath) {
 
         char cwd_buf[512] = {};
         _getcwd(cwd_buf, 512);
@@ -35,7 +35,7 @@ class fileserver : public xp::ServerSocket {
             char buf[1024] = {};
             while (!f.eof()) {
                 f.read(buf, 1024);
-                size_t bytes_read = (size_t)f.gcount();
+                auto bytes_read = (size_t)f.gcount();
                 std::string_view sv(buf, bytes_read);
                 if (!sent_header) {
                     if (is_icon) {

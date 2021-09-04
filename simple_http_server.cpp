@@ -15,7 +15,9 @@ class fileserver : public xp::ServerSocket {
     }
 
     static void send_file(xp::Sock* client, std::string_view filepath) {
-
+#ifndef _WIN32
+#define _getcwd getcwd
+#endif
         char cwd_buf[512] = {};
         _getcwd(cwd_buf, 512);
         bool want_ico = false;

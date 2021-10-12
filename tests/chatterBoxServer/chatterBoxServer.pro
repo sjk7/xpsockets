@@ -9,6 +9,8 @@ SOURCES += \
     chatterBoxServer.cpp
 
 HEADERS += \
+    ../../http.hpp \
+    ../../strings.hpp \
     ../../xpcommon.h \
     ../../xpsockets.h \
     ../../xpsockets.hpp

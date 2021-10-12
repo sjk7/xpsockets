@@ -287,9 +287,11 @@ class ServerSocket : public Sock {
         SocketContext* ctx, bool debug_info) noexcept;
     [[nodiscard]] ServerStats stats() const noexcept { return m_stats; }
 
-    virtual bool on_got_request(Sock* client, std::string_view request) {
+    virtual bool on_got_request(
+        Sock* client, std::string_view request, bool& keep_client) {
         (void)client;
         (void)request;
+        (void)keep_client;
         return false;
     }
 
@@ -321,7 +323,7 @@ inline ioresult_t read_until_found(Sock* sock,
                     std::ignore = bytes_read;
                     std::ignore = mydata;
                 }
-                const auto found = sock->data().find(find_what);
+                found = sock->data().find(find_what);
                 if (found != std::string::npos) {
                     return found;
                 }

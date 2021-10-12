@@ -955,18 +955,16 @@ int64_t ServerSocket::perform_internal_accept(
         }
 
         m_stats.naccepts++;
-
-        auto ptr = acc.get();
         auto should_accept = on_new_client(acc);
         m_stats.nactive_accepts--;
 
         if (should_accept) {
             const auto oaa
                 = on_after_accept_new_client(ctx, should_accept, debug_info);
-            assert(oaa == -1);
+            // assert(oaa == -1);
             if (oaa < 0) {
                 remove_client(should_accept,
-                    concat("on_after_accept returned a valid pointer").c_str());
+                    concat("on_after_accept returned less than zero").c_str());
             }
         } else {
             if (debug_info) {
@@ -974,10 +972,14 @@ int64_t ServerSocket::perform_internal_accept(
                        "returned null\n",
                     this->name().data(), xp::to_string(client_endpoint).data());
             }
+
+            remove_client(
+                should_accept, concat("should_accept returned false").c_str());
         }
 
-        // all paths remove the client
-        remove_client(ptr, "should_accept completed");
+        // all paths DO NOT remove the client, in case the
+        // user of our class wants to implement long-lived connections
+        // remove_client(ptr, "should_accept completed");
         return retval;
     }
 
@@ -1156,14 +1158,19 @@ AcceptedSocket* ServerSocket::on_new_client(
 
     bool do_default = true;
     xp::ioresult_t myread = xp::read_until_found(retval, xp::DOUBLE_NEWLINE, t);
+    bool keep_client = false;
 
     if (myread.found_where != std::string::npos) {
 
-        bool handled = on_got_request(retval, retval->data().substr(0, found));
+        bool handled = on_got_request(
+            retval, retval->data().substr(0, found), keep_client);
         do_default = !handled;
     }
 
     if (!do_default) {
+        if (keep_client) {
+            return static_cast<AcceptedSocket*>(retval);
+        }
         return nullptr;
     }
 

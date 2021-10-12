@@ -246,7 +246,7 @@ template <typename CRTP> class SocketBase {
         int64_t remain{(int64_t)sv.size()};
         const auto sck = xp::to_native(m_fd);
         char* ptr = (char*)sv.data();
-        xp::ioresult_t retval{0, 0};
+        xp::ioresult_t retval{};
         stopwatch sw("TXTimer", true);
 
 #ifndef MSG_NOSIGNAL
@@ -354,7 +354,7 @@ template <typename CRTP> class SocketBase {
 
     ioresult_t handle_remote_closed(const ioresult_t& io, const char* why) {
         assert(why);
-        ioresult_t ret{io.bytes_transferred, to_int(xp::errors_t::NOT_CONN)};
+        ioresult_t ret{io.bytes_transferred, to_int(xp::errors_t::NOT_CONN), 0};
         ret.return_value = m_last_error = to_int(xp::errors_t::NOT_CONN);
         m_slast_error = concat(why, ' ', xp::socket_error_string(m_last_error));
         m_state = sockstate_t::about_to_close;
@@ -410,7 +410,7 @@ template <typename CRTP> class SocketBase {
     int handle_failed_read(const xp::timepoint_t time_start,
         const xp::msec_timeout_t timeout) noexcept {
         int ret = 0;
-        assert(!is_blocking());
+        // assert(!is_blocking());
         m_last_error = xp::socket_error();
         ret = -m_last_error;
         const auto dur
@@ -429,7 +429,7 @@ template <typename CRTP> class SocketBase {
             return ret;
         }
         m_slast_error = xp::concat("unexpected return value of: ", m_last_error,
-            socket_error_string(m_last_error));
+            " ", socket_error_string(m_last_error));
         assert(ret != -1);
         return ret;
     }
@@ -437,16 +437,16 @@ template <typename CRTP> class SocketBase {
     auto read(std::string& data, read_callback_t* read_callback,
         xp::msec_timeout_t timeout) -> xp::ioresult_t {
 
-        assert(this->m_fd != xp::invalid_handle);
-        xp::ioresult_t ret{0, 0};
+        // assert(this->m_fd != xp::invalid_handle);
+        xp::ioresult_t ret{};
         stopwatch read_timer("RXTimer", true);
 
         sockstate_wrapper_t w(this->m_state, sockstate_t::in_recv);
 
         const auto time_start = xp::system_current_time_millis();
         while (true) {
-            assert(m_fd != xp::invalid_handle
-                && "Someone closed the socket during read()" != nullptr);
+            // assert(m_fd != xp::invalid_handle
+            //    && "Someone closed the socket during read()" != nullptr);
 
             ret.return_value = prepare_read(read_timer, timeout);
             if (ret.return_value != to_int(xp::errors_t::NONE)) {
@@ -1140,102 +1140,66 @@ SocketContext* ServerSocket::context() noexcept {
 AcceptedSocket* ServerSocket::on_new_client(
     std::unique_ptr<AcceptedSocket>& accepted) {
 
-    if (!add_client(accepted)) {
-        // too many clients!
-        fprintf(stderr, "too many clients! The maximum is: %zu\n",
-            this->max_clients());
-        this->pimpl->m_last_error = xp::TOO_MANY_CLIENTS;
-        this->pimpl->m_slast_error = "Too many clients";
-    }
-    // adding a client to our vector clears a!
-    assert(!m_clients.empty());
-    auto retval = m_clients[m_clients.size() - 1];
+    auto retval = add_client(accepted);
+    if (!retval) return nullptr;
+
     auto ctx = this->pimpl->context();
     std::ignore = ctx;
     const size_t found = std::string::npos;
     const bool debug
         = (this->pimpl->context() != nullptr) && pimpl->context()->debug_info;
 
-    stopwatch sw("", !debug);
-    if (debug) {
-        const auto astr = to_string((const Sock*)retval);
-        sw.id_set(astr);
-    }
-
     const xp::duration_t dur{duration_t::default_timeout_duration};
     constexpr xp::msec_timeout_t t{to_int(dur)};
-    bool good = false;
+
     const auto hdr = std::string_view{xp::simple_http_response_no_cl};
 
     bool do_default = true;
-    while (found == std::string::npos) {
-        const auto myread = retval->read_until(
-            t, retval->data(), [&](auto& bytes_read, auto& mydata) noexcept {
-                assert(bytes_read); // should only return to us when data
-                                    // ready, or fail with timeout
-                if (debug) {
+    xp::ioresult_t myread = xp::read_until_found(retval, xp::DOUBLE_NEWLINE, t);
 
-                    std::cout << "read: " << mydata << endl;
-                    std::ignore = bytes_read;
-                    std::ignore = mydata;
-                }
-                const auto found = retval->data().find("\r\n\r\n");
-                good = found != std::string::npos;
-                if (good) return 1;
-                sw.restart();
+    if (myread.found_where != std::string::npos) {
 
-                return 0;
-            });
+        bool handled = on_got_request(retval, retval->data().substr(0, found));
+        do_default = !handled;
+    }
 
-        if (good) {
+    if (!do_default) {
+        return nullptr;
+    }
 
-            bool handled
-                = on_got_request(retval, retval->data().substr(0, found));
-            do_default = !handled;
-        }
+    if (myread.found_where != std::string::npos) {
+        auto sent = retval->send(hdr);
+        if (sent.bytes_transferred != hdr.size()) {
+            fprintf(stderr,
+                "****Did not send all header data: sent = "
+                "%" PRId64 " serr = %s\n ",
+                sent.return_value, retval->last_error_string().c_str());
+        } else {
 
-        if (!do_default) {
-            return nullptr;
-        }
-
-        if (good) {
-            auto sent = retval->send(hdr);
-            if (sent.bytes_transferred != hdr.size()) {
-                fprintf(stderr,
-                    "****Did not send all header data: sent = "
-                    "%" PRId64 " serr = %s\n ",
-                    sent.return_value, retval->last_error_string().c_str());
-            } else {
-
-                if (debug) {
-                    std::cout << "Header sent OK" << endl;
-                }
+            if (debug) {
+                std::cout << "Header sent OK" << endl;
             }
-            sent = retval->send(retval->data());
-            if (sent.bytes_transferred != retval->data().size()) {
-                fprintf(stderr,
-                    "****Did not send all body data: sent = %" PRId64
-                    " serr = %s\n ",
-                    sent.return_value, retval->last_error_string().c_str());
-            } else {
+        }
+        sent = retval->send(retval->data());
+        if (sent.bytes_transferred != retval->data().size()) {
+            fprintf(stderr,
+                "****Did not send all body data: sent = %" PRId64
+                " serr = %s\n ",
+                sent.return_value, retval->last_error_string().c_str());
+        } else {
 
-                if (debug) {
-                    std::cout << "Header sent OK" << endl;
-                }
+            if (debug) {
+                std::cout << "Header sent OK" << endl;
             }
-            return nullptr;
         }
-        if (myread.return_value == 0) {
-            m_stats.nclients_disconnected_during_read++;
-            return nullptr;
-        }
-        if (!xp::error_can_continue(myread.return_value)) {
-            return nullptr;
-        }
-
-        if (sw.elapsed() > dur) {
-            return nullptr;
-        }
+        return nullptr;
+    }
+    if (myread.return_value == 0) {
+        m_stats.nclients_disconnected_during_read++;
+        return nullptr;
+    }
+    if (!xp::error_can_continue(myread.return_value)) {
+        return nullptr;
     }
     return nullptr;
 }
@@ -1296,10 +1260,7 @@ bool xp::ServerSocket::remove_client(Sock* client_to_remove, const char* why) {
 AcceptedSocket::AcceptedSocket(xp::sock_handle_t s,
     const endpoint_t& remote_endpoint, std::string_view name,
     ServerSocket* pserver, SocketContext* ctx)
-    : Sock(s, name, remote_endpoint, ctx), m_pserver(pserver) {
-
-
-}
+    : Sock(s, name, remote_endpoint, ctx), m_pserver(pserver) {}
 
 #ifdef _WIN32
 

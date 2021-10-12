@@ -27,8 +27,14 @@ class fileserver : public xp::ServerSocket {
         }
         printf("server looking for file %s,\nrelative to: %s\n\n",
             filepath.data(), cwd_buf);
-        std::ifstream f(filepath.data(), std::ios::binary);
-        bool sent_header = false;
+        std::ifstream f(filepath.data(), std::ios::binary|std::ios::in);
+        if (!f){
+		printf("fstream for file %s is bad\n", filepath.data());
+		perror("failed to open file");
+	}else{
+		printf("fstream for file %s is good\n", filepath.data());
+	}
+	bool sent_header = false;
         size_t total_sent = 0;
         bool is_icon = filepath.find(".ico") != std::string::npos;
         if (!f) {
@@ -105,3 +111,4 @@ inline void run_file_server() {
     fileserver fs;
     fs.listen();
 }
+

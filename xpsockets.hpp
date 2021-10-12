@@ -228,27 +228,8 @@ class ServerSocket : public Sock {
     public:
     ServerSocket(std::string_view name, const xp::endpoint_t& listen_where,
         SocketContext* ctx = nullptr);
-    ~ServerSocket() override = default;
+    virtual ~ServerSocket() override = default;
     int listen();
-
-    // return a nullptr to immediately disconnect the client.
-    virtual AcceptedSocket* on_new_client(std::unique_ptr<AcceptedSocket>& a);
-
-    auto next_id() noexcept { return ++m_id_seed; }
-    std::unique_ptr<AcceptedSocket> do_accept(
-        xp::endpoint_t& client_endpoint, bool debug_info = false);
-    bool add_client(std::unique_ptr<AcceptedSocket>& client) {
-        if (m_clients.size() == max_clients()) {
-            return false;
-        }
-        m_clients.push_back(client.get());
-        client.release(); // vector owns it now
-        if (m_clients.size() > m_stats.peak_clients) {
-            m_stats.peak_clients = m_clients.size();
-            m_stats.when_peak_clients = xp::system_current_time_millis();
-        }
-        return true;
-    }
 
     [[nodiscard]] const std::vector<Sock*>& clients() const noexcept {
         return m_clients;
@@ -277,6 +258,26 @@ class ServerSocket : public Sock {
     bool remove_client(Sock* client_to_remove, const char* why);
     virtual int on_idle() noexcept { return 0; }
 
+    // return a nullptr to immediately disconnect the client.
+    virtual AcceptedSocket* on_new_client(std::unique_ptr<AcceptedSocket>& a);
+
+    auto next_id() noexcept { return ++m_id_seed; }
+    std::unique_ptr<AcceptedSocket> do_accept(
+        xp::endpoint_t& client_endpoint, bool debug_info = false);
+
+    Sock* add_client(std::unique_ptr<AcceptedSocket>& client) {
+        if (m_clients.size() == max_clients()) {
+            return nullptr;
+        }
+        m_clients.push_back(client.get());
+        client.release(); // vector owns it now
+        if (m_clients.size() > m_stats.peak_clients) {
+            m_stats.peak_clients = m_clients.size();
+            m_stats.when_peak_clients = xp::system_current_time_millis();
+        }
+        return m_clients[m_clients.size() - 1];
+    }
+
     // return < 0 to disconnect the client, and NOT add him to the clients()
     // collection
     virtual int on_after_accept_new_client(
@@ -298,6 +299,37 @@ class ServerSocket : public Sock {
     size_t m_max_clients{xp::MAX_CLIENTS};
     ServerStats m_stats{};
 };
+
+// returns the position of the doublenewline if found,
+// or if not, returns std::string::npos
+inline ioresult_t read_until_found(Sock* sock,
+    std::string_view find_what = xp::DOUBLE_NEWLINE,
+    xp::msec_timeout_t timeout = xp::msec_timeout_t::thirty_seconds,
+    bool debug = false) {
+
+    assert(sock);
+    size_t found = std::string::npos;
+    xp::ioresult_t myread{};
+
+    while (found == std::string::npos) {
+        myread = sock->read_until(timeout, sock->data(),
+            [&](auto& bytes_read, auto& mydata) noexcept {
+                assert(bytes_read); // should only return to us when data
+                                    // ready, or fail with timeout
+                if (debug) {
+                    printf("read: %s\n", mydata.data());
+                    std::ignore = bytes_read;
+                    std::ignore = mydata;
+                }
+                const auto found = sock->data().find(find_what);
+                if (found != std::string::npos) {
+                    return found;
+                }
+                return size_t(0);
+            });
+    };
+    return myread;
+}
 
 } // namespace xp
 

@@ -216,11 +216,13 @@ inline std::ostream& operator<<(std::ostream& os, const port_type& port) {
     return os;
 }
 
+static inline constexpr const char* DOUBLE_NEWLINE = "\r\n\r\n";
 struct ioresult_t {
     size_t bytes_transferred;
     // this is really a socket error, but I wanted to avoid user having to
     // #include<Winsock.h>
     int64_t return_value;
+    size_t found_where;
 };
 
 inline std::string to_string(const endpoint_t& ep) {

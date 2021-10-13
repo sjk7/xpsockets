@@ -67,6 +67,17 @@ struct header {
     header(std::string_view data, bool have_dbl_newline_already = false) {
         parse(data, have_dbl_newline_already);
     }
+    header(const header& rhs) {
+        m_fields = rhs.m_fields;
+        this->m_request_line = rhs.m_request_line;
+        this->m_is_valid = rhs.m_is_valid;
+    }
+    header& operator=(const header& rhs) {
+        m_fields = rhs.m_fields;
+        this->m_request_line = rhs.m_request_line;
+        this->m_is_valid = rhs.m_is_valid;
+        return *this;
+    }
 
     bool parse(std::string_view data, bool have_dbl_newline_already = false) {
         clear();
@@ -139,12 +150,41 @@ struct header {
     const auto& field_by_id(std::string_view id) const {
         auto& v = m_fields;
         static name_value_pair_type nvp = name_value_pair_type{};
-        auto it = std::find_if(
-            v.begin(), v.end(), [&](auto& f) { return f.name == id; });
+        auto it = std::find_if(v.begin(), v.end(), [&](auto& f) {
+            if (f.name.length() != id.length()) return false;
+            return strings::to_lower(id) == strings::to_lower(f.name);
+        });
         if (it != v.end()) {
             return *it;
         }
         return nvp;
+    }
+
+    void add_field(const name_value_pair_type& nvp) {
+        auto it = std::find_if(m_fields.begin(), m_fields.end(),
+            [&](const auto& np) { return np.name == nvp.name; });
+
+        if (it != m_fields.end()) {
+            *it = nvp;
+        } else {
+            m_fields.push_back(nvp);
+        }
+    }
+
+    std::string serialize(size_t content_length = std::string::npos) {
+        static constexpr const char* COLON_SPACE = ": ";
+        if (content_length != std::string::npos) {
+            add_field({"Content-Length: ", std::to_string(content_length)});
+        }
+        std::string s;
+        for (const auto& field : m_fields) {
+            s += field.name + COLON_SPACE + field.value;
+            s += strings::NEWLINE;
+        }
+        if (!s.empty()) {
+            s = s.substr(s.length() - 2);
+        }
+        return s;
     }
 
     private:
@@ -155,9 +195,9 @@ struct header {
     std::string m_last_error;
     void add_fields(const std::vector<std::string_view>& v) {
         m_fields.clear();
-        if (v.size() == 0) return;
+        if (v.empty()) return;
 
-        m_fields.reserve(v.size() - 1);
+        m_fields.reserve(v.size());
         int i = 0;
 
         for (const auto& s : v) {

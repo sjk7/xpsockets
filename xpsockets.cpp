@@ -81,7 +81,7 @@ inline SocketContext& default_context_instance() noexcept {
     static SocketContext ctx;
     return ctx;
 }
-enum class sockstate_t { none, in_recv, in_send, about_to_close };
+enum class sockstate_t { none, in_recv, in_send, about_to_close, closed };
 
 static inline uint64_t longest_alive = 0;
 
@@ -217,11 +217,21 @@ template <typename CRTP> class SocketBase {
 
     int close() noexcept {
 
+        const auto old_state = m_state;
         assert(m_state == sockstate_t::none
-            || m_state == sockstate_t::about_to_close); // why are we being
-                                                        // closed whilst active?
+            || m_state == sockstate_t::about_to_close
+            || m_state == sockstate_t::closed); // why are we being
+                                                // closed whilst active?
+        if (m_state == sockstate_t::closed) return 0;
         const int ret = xp::sock_close(m_fd);
         m_fd = xp::invalid_handle;
+        m_state = sockstate_t::closed;
+        if (old_state != m_state) {
+            auto p = dynamic_cast<AcceptedSocket*>(crtp());
+            if (p) {
+                p->on_closed();
+            }
+        }
         return ret;
     }
     int shutdown(xp::shutdown_how how, const char* why) noexcept {
@@ -542,7 +552,7 @@ class Sock::Impl : public SocketBase<Sock> {
 
         };
 
-    ~Impl() override = default;
+    ~Impl() override { this->close(); };
 
     private:
 };
@@ -568,6 +578,10 @@ auto Sock::underlying_socket() const noexcept -> sock_handle_t {
 
 auto Sock::send(std::string_view data) noexcept -> xp::ioresult_t {
     return pimpl->send(data);
+}
+
+int Sock::close() noexcept {
+    return pimpl->close();
 }
 
 bool xp::Sock::is_blocking() const noexcept {
@@ -605,6 +619,12 @@ auto Sock::last_error() const noexcept -> int {
 
 auto Sock::is_valid() const noexcept -> bool {
     return pimpl->is_valid();
+}
+
+void AcceptedSocket::on_closed() {
+    if (m_pserver) {
+        m_pserver->on_client_closed(this);
+    }
 }
 
 auto Sock::name() const noexcept -> string_view {
@@ -947,6 +967,9 @@ int64_t ServerSocket::perform_internal_accept(
         }
     }
 
+    auto accept_ptr
+        = acc.get(); // stash the pointer in case we want to remove it later
+
     if (acc) { //-V581
         m_stats.nactive_accepts++;
         if (m_stats.nactive_accepts > m_stats.npeak_active_accepts) {
@@ -974,7 +997,7 @@ int64_t ServerSocket::perform_internal_accept(
             }
 
             remove_client(
-                should_accept, concat("should_accept returned false").c_str());
+                accept_ptr, concat("should_accept returned false").c_str());
         }
 
         // all paths DO NOT remove the client, in case the
@@ -1167,6 +1190,9 @@ AcceptedSocket* ServerSocket::on_new_client(
         do_default = !handled;
     }
 
+    if (!keep_client) {
+        return nullptr;
+    }
     if (!do_default) {
         if (keep_client) {
             return static_cast<AcceptedSocket*>(retval);

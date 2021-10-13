@@ -117,6 +117,7 @@ class Sock : public no_copy {
     [[nodiscard]] xp::sock_handle_t fd() const noexcept;
     [[nodiscard]] uint64_t id() const noexcept;
     void id_set(uint64_t newid) noexcept;
+    int close() noexcept;
 
     template <typename F>
     auto read_until(xp::msec_timeout_t t, std::string& data, F&& f)
@@ -206,6 +207,8 @@ class AcceptedSocket : public Sock {
     ~AcceptedSocket() override = default;
     auto server() noexcept -> ServerSocket* { return m_pserver; }
 
+    virtual void on_closed();
+
     private:
     ServerSocket* m_pserver{nullptr};
 };
@@ -224,6 +227,7 @@ struct ServerStats {
 
 class ServerSocket : public Sock {
     friend class SocketContext;
+    friend class AcceptedSocket;
 
     public:
     ServerSocket(std::string_view name, const xp::endpoint_t& listen_where,
@@ -294,6 +298,8 @@ class ServerSocket : public Sock {
         (void)keep_client;
         return false;
     }
+
+    virtual void on_client_closed(AcceptedSocket*) {}
 
     private:
     std::vector<Sock*> m_clients;

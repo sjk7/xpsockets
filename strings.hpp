@@ -85,4 +85,18 @@ inline std::vector<std::string> split(
     return output;
 }
 
+std::string to_lower(const std::string& s) {
+    std::string data(s);
+    std::transform(data.begin(), data.end(), data.begin(),
+        [](unsigned char c) { return std::tolower(c); });
+    return data;
+}
+
+std::string to_lower(const std::string_view s) {
+    std::string data(s);
+    std::transform(data.begin(), data.end(), data.begin(),
+        [](unsigned char c) { return std::tolower(c); });
+    return data;
+}
+
 } // namespace strings

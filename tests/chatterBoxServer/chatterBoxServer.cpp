@@ -42,8 +42,15 @@ struct myserver : xp::ServerSocket {
         auto it = std::find_if(m_chatclients.begin(), m_chatclients.end(),
             [&](auto& c) { return c.psock == psock; });
 
-        assert(it != m_chatclients.end());
+        if (it == m_chatclients.end()) return nullptr;
         return &(*it);
+    }
+
+    virtual void on_client_closed(xp::AcceptedSocket* which) override {
+        auto client = find_client(which);
+        if (client != nullptr) {
+            remove_chat_client(*client);
+        }
     }
 
     bool auth_client(chatclient& client) {
@@ -54,13 +61,15 @@ struct myserver : xp::ServerSocket {
         return false;
     }
 
-    virtual bool on_got_request(
-        Sock* client, std::string_view request, bool& keep_client) override {
+    virtual bool on_got_request(xp::Sock* client, std::string_view request,
+        bool& keep_client) override {
 
         auto header = http::header(request, true);
         assert(header.is_valid());
+#ifndef NDEBUG
         auto header_agn = http::header(client->data());
         assert(header_agn.is_valid());
+#endif
         auto& connection_header = header.field_by_id("Connection");
         assert(!connection_header.value.empty());
 
@@ -69,11 +78,31 @@ struct myserver : xp::ServerSocket {
             auto& myclient = add_chat_client(client);
             if (auth_client(myclient)) {
                 keep_client = true;
+                std::string response = "Welcome, you authenticated correctly";
+                std::string hdr = "HTTP/1.1 200 OK\r\n";
+                hdr += "Content-Type: text/html\r\n";
+                hdr += "Connection: keep-alive\r\n";
+                hdr += "Content-Length: " + std::to_string(response.size());
+                hdr += "\r\n\r\n";
+                hdr += response;
+                myclient.psock->send(hdr);
                 return true;
+            } else {
+                refuse_client(myclient);
             }
         }
         keep_client = false;
         return false;
+    }
+
+    void refuse_client(chatclient& client) {
+        auto response
+            = std::string("HTTP/1.1 200\r\n"
+                          "Content-Type: text/html\r\n\r\n"
+                          "KLJ says: Not authorised, goodbye!\r\n\r\n");
+        auto sent = client.psock->send(response);
+        assert(sent.bytes_transferred == response.size());
+        remove_chat_client(client);
     }
 
     virtual int on_after_accept_new_client(
@@ -93,12 +122,12 @@ struct myserver : xp::ServerSocket {
 
         auto& v = m_chatclients;
         bool found = false;
-        auto it = v.erase(std::remove_if(v.begin(), v.end(),
-                              [&](auto& client) {
-                                  bool ret = &c == &client;
-                                  found = ret;
-                                  return found;
-                              }),
+        v.erase(std::remove_if(v.begin(), v.end(),
+                    [&](auto& client) {
+                        bool ret = &c == &client;
+                        found = ret;
+                        return found;
+                    }),
             v.end());
 
         return found;

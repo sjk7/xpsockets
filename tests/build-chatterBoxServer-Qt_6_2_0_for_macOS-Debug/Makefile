@@ -189,7 +189,9 @@ DIST          = ../../../../Qt/6.2.0/macos/mkspecs/features/spec_pre.prf \
 		../../../../Qt/6.2.0/macos/mkspecs/features/exceptions.prf \
 		../../../../Qt/6.2.0/macos/mkspecs/features/yacc.prf \
 		../../../../Qt/6.2.0/macos/mkspecs/features/lex.prf \
-		../chatterBoxServer/chatterBoxServer.pro ../../xpcommon.h \
+		../chatterBoxServer/chatterBoxServer.pro ../../http.hpp \
+		../../strings.hpp \
+		../../xpcommon.h \
 		../../xpsockets.h \
 		../../xpsockets.hpp ../../xpcommon.cpp \
 		../../xpsockets.cpp \
@@ -539,7 +541,9 @@ xpsockets.o: ../../xpsockets.cpp ../../xpsockets.hpp \
 	$(CXX) -c $(CXXFLAGS) $(INCPATH) -o xpsockets.o ../../xpsockets.cpp
 
 chatterBoxServer.o: ../chatterBoxServer/chatterBoxServer.cpp ../../xpsockets.hpp \
-		../../xpcommon.h
+		../../xpcommon.h \
+		../../http.hpp \
+		../../strings.hpp
 	$(CXX) -c $(CXXFLAGS) $(INCPATH) -o chatterBoxServer.o ../chatterBoxServer/chatterBoxServer.cpp
 
 ####### Install

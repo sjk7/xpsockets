@@ -115,7 +115,7 @@ inline int test_badly_behaved_client(int ctr = 2) {
                     return 0;
                 });
 
-            assert(rx.return_value == -1);
+            assert(rx.return_value == 10057); // at least in doze
             std::ignore = rx;
 
         }; // while()

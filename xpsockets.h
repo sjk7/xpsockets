@@ -274,9 +274,11 @@ inline auto sock_connect(const xp::sock_handle_t sock, const xp::endpoint_t& ep,
     const xp::msec_timeout_t t = xp::msec_timeout_t::default_timeout) -> int {
     addrinfo_wrapper addr(ep);
 
-    int took = 0;
-    int ret = 0;
-    while (took < to_int(t)) {
+    int ret = to_int(xp::errors_t::TIMED_OUT);
+    const int wait_for = to_int(t);
+    xp::stopwatch sw("Connecting ...");
+
+    while (sw.elapsed_ms() <= wait_for) {
         ret = ::connect(to_native(sock), addr.m_paddr->ai_addr,
             (int)addr.m_paddr->ai_addrlen);
 
@@ -285,7 +287,8 @@ inline auto sock_connect(const xp::sock_handle_t sock, const xp::endpoint_t& ep,
         }
 
         const auto err = xp::socket_error();
-        // printf("Connect err: %d\n", err);
+        // printf("Connect err: %d: %s\n", err,
+        // xp::socket_error_string().c_str());
         static constexpr const auto server_went_away = 22;
         if (err == server_went_away) {
             // I see this if the server goes away
@@ -304,14 +307,8 @@ inline auto sock_connect(const xp::sock_handle_t sock, const xp::endpoint_t& ep,
         }
 
         xp::sleep(1);
-        ++took;
     }
 
-    if (took >= to_int(t)) {
-        ret = to_int(xp::errors_t::TIMED_OUT);
-    } else {
-        // printf("Connected to host in %d ms.\n", took);
-    }
     if (ret != 0) {
         perror("connect");
     }

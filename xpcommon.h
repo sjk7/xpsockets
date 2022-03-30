@@ -190,7 +190,7 @@ inline constexpr int to_int(const msec_timeout_t t) noexcept {
 enum class port_type : uint32_t {
     ftp = 21,
     ssh = 22,
-    http = 50,
+    http = 80,
     http_proxy = 8080,
     testing_port = 4321
 };

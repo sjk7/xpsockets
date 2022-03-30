@@ -27,14 +27,14 @@ class fileserver : public xp::ServerSocket {
         }
         printf("server looking for file %s,\nrelative to: %s\n\n",
             filepath.data(), cwd_buf);
-        std::ifstream f(filepath.data(), std::ios::binary|std::ios::in);
-        if (!f){
-		printf("fstream for file %s is bad\n", filepath.data());
-		perror("failed to open file");
-	}else{
-		printf("fstream for file %s is good\n", filepath.data());
-	}
-	bool sent_header = false;
+        std::ifstream f(filepath.data(), std::ios::binary | std::ios::in);
+        if (!f) {
+            printf("fstream for file %s is bad\n", filepath.data());
+            perror("failed to open file");
+        } else {
+            printf("fstream for file %s is good\n", filepath.data());
+        }
+        bool sent_header = false;
         size_t total_sent = 0;
         bool is_icon = filepath.find(".ico") != std::string::npos;
         if (!f) {
@@ -78,7 +78,11 @@ class fileserver : public xp::ServerSocket {
     protected:
     int on_idle() noexcept override { return 0; }
     virtual bool on_got_request(
-        Sock* client, std::string_view request) override {
+        Sock* client, std::string_view request, bool& keep_client) {
+        (void)client;
+        (void)request;
+        (void)keep_client;
+
         // be a totally insecure, dumb file server
         const auto found = request.find("\r\n");
         if (found == std::string::npos) {
@@ -108,7 +112,9 @@ class fileserver : public xp::ServerSocket {
 };
 
 inline void run_file_server() {
+
     fileserver fs;
+    printf("file server listening: %s\n", xp::to_string(fs.endpoint()).c_str());
+
     fs.listen();
 }
-

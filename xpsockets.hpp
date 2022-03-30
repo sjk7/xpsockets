@@ -335,6 +335,8 @@ inline ioresult_t read_until_found(Sock* sock,
                 }
                 return size_t(0);
             });
+
+        if (myread.return_value < 0) return myread;
     };
     return myread;
 }

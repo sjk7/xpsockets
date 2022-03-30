@@ -23,18 +23,14 @@ void test_server() {
 
 int main() {
 
-    run_file_server();
-
-    test_badly_behaved_client(3);
-
-    test_server();
+    // test_server();
 
     {
         try {
 
             // example with lambda, using read2()
             xp::ConnectingSocket consock("my connecting socket",
-                xp::endpoint_t{"google.com", xp::port_type::testing_port},
+                xp::endpoint_t{"google.com", xp::port_type::http},
                 xp::msec_timeout_t::default_timeout);
             cout << "Sending the following request: " << xp::simple_http_request
                  << endl;
@@ -84,7 +80,7 @@ int main() {
         try {
             // example with using a callback class. for read()
             xp::ConnectingSocket consock("my connecting socket",
-                xp::endpoint_t{"google.com", xp::port_type::testing_port});
+                xp::endpoint_t{"google.com", xp::port_type::http});
             cout << "Sending the following request: " << xp::simple_http_request
                  << endl;
             const auto send_result = consock.send(xp::simple_http_request);
@@ -102,11 +98,16 @@ int main() {
 
         } catch (const std::exception& e) {
             cerr << "Caught an exception: " << e.what() << endl;
+            exit(-1);
         }
     }
 
+    test_badly_behaved_client(3);
+
     cout.flush();
     fflush(stdout);
+
+    run_file_server();
 
     return 0;
 }

@@ -115,7 +115,9 @@ inline int test_badly_behaved_client(int ctr = 2) {
                     return 0;
                 });
 
-            assert(rx.return_value == 10057); // at least in doze
+            printf("Return value: %ld: %s\n", rx.return_value, c.last_error_string().c_str());
+            assert(rx.return_value == 10057 || // doze
+                    rx.return_value == 107); // Ubuntu
             std::ignore = rx;
 
         }; // while()

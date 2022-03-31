@@ -1,0 +1,3 @@
+/home/steve/xpsockets/build/CMakeFiles/rebuild_cache.dir
+/home/steve/xpsockets/build/CMakeFiles/edit_cache.dir
+/home/steve/xpsockets/build/CMakeFiles/tddsockets.dir

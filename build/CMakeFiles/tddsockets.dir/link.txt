@@ -1,0 +1,1 @@
+/usr/bin/c++     CMakeFiles/tddsockets.dir/src/tests/main.cpp.o CMakeFiles/tddsockets.dir/src/xpcommon.cpp.o  -o tddsockets  -lpthread 

@@ -107,7 +107,7 @@ int main() {
     cout.flush();
     fflush(stdout);
 
-    run_file_server();
+    // run_file_server();
 
     return 0;
 }

@@ -4,6 +4,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 project(tddsockets VERSION 0.5)
 
-add_executable(tddsockets ${tddsockets_SOURCE_DIR}/src/xpcommon.cpp main.cpp)
-target_include_directories(tddsockets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+add_executable(tddsockets ${tddsockets_SOURCE_DIR}/src/tests/main.cpp ${tddsockets_SOURCE_DIR}/src/xpcommon.cpp)
+target_include_directories(tddsockets PUBLIC ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/include/tests)
 

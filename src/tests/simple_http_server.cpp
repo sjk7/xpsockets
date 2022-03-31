@@ -76,9 +76,11 @@ class fileserver : public xp::ServerSocket {
             xp::endpoint_t{"0.0.0.0", xp::port_type{8080}}) {}
 
     protected:
-    int on_idle() noexcept override { return 0; }
+    int on_idle() noexcept override {
+        return 0;
+    }
     virtual bool on_got_request(
-        Sock* client, std::string_view request, bool& keep_client) {
+        Sock* client, std::string_view request, bool& keep_client) override {
         (void)client;
         (void)request;
         (void)keep_client;
